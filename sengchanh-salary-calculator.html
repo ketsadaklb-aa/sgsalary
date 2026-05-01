@@ -481,21 +481,8 @@
     };
 
     // ─── AUTH HELPERS ─────────────────────────────────────────────────────────
-    const AUTH_USERS_KEY = 'ssc_auth_users';
     const AUTH_SESSION_KEY = 'ssc_auth_session';
 
-    const getAuthUsers = () => {
-      try {
-        const saved = localStorage.getItem(AUTH_USERS_KEY);
-        if (saved) return JSON.parse(saved);
-      } catch {}
-      const defaults = [{ username: 'admin', password: 'admin123', role: 'admin' }];
-      localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(defaults));
-      return defaults;
-    };
-    const saveAuthUsers = (list) => {
-      try { localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(list)); } catch {}
-    };
     const getAuthSession = () => {
       try { return JSON.parse(sessionStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch { return null; }
     };
@@ -506,22 +493,35 @@
       try { sessionStorage.removeItem(AUTH_SESSION_KEY); } catch {}
     };
 
+    // ─── API HELPER ───────────────────────────────────────────────────────────
+    const apiCall = async (method, endpoint, body) => {
+      try {
+        const opts = { method, headers: {} };
+        if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+        const r = await fetch(endpoint, opts);
+        const data = await r.json().catch(() => null);
+        return { ok: r.ok, status: r.status, data };
+      } catch { return { ok: false, status: 0, data: null }; }
+    };
+
     // ─── LOGIN SCREEN ──────────────────────────────────────────────────────────
     const LoginScreen = ({ onLogin }) => {
       const [username, setUsername] = useState('');
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
       const [showPw, setShowPw] = useState(false);
+      const [loading, setLoading] = useState(false);
 
-      const handleSubmit = (e) => {
+      const handleSubmit = async (e) => {
         e.preventDefault();
-        const users = getAuthUsers();
-        const match = users.find(u => u.username === username.trim() && u.password === password);
-        if (match) {
-          setAuthSession(match);
-          onLogin({ username: match.username, role: match.role });
+        setLoading(true); setError('');
+        const result = await apiCall('POST', '/api/auth/login', { username: username.trim(), password });
+        setLoading(false);
+        if (result.ok) {
+          setAuthSession(result.data);
+          onLogin(result.data);
         } else {
-          setError('ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ');
+          setError(result.data?.error || 'ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ');
         }
       };
 
@@ -559,9 +559,9 @@
                 </div>
               </div>
               {error && <p className="text-rose-600 font-bold text-sm text-center bg-rose-50 rounded-xl py-2 px-3">{error}</p>}
-              <button type="submit"
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl transition-all active:scale-95 mt-2">
-                ເຂົ້າສູ່ລະບົບ →
+              <button type="submit" disabled={loading}
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-black rounded-2xl transition-all active:scale-95 mt-2">
+                {loading ? '⏳ ກຳລັງກວດສອບ...' : 'ເຂົ້າສູ່ລະບົບ →'}
               </button>
             </form>
           </div>
@@ -1057,9 +1057,11 @@
     // ─── MAIN APP ─────────────────────────────────────────────────────────────
     function App() {
       const [authSession, setAuthSessionState] = useState(getAuthSession);
-      const [authUsers, setAuthUsers] = useState(getAuthUsers);
+      const [authUsers, setAuthUsers] = useState([]);
       const [newUserForm, setNewUserForm] = useState({ username: '', password: '', role: 'user' });
       const [userMsg, setUserMsg] = useState('');
+      const [cloudSync, setCloudSync] = useState(false);
+      const [appLoading, setAppLoading] = useState(true);
 
       const [tab, setTab] = useState("upload");
       const [employees, setEmployees] = useState(loadEmployees);
@@ -1075,6 +1077,7 @@
       const [sessionName, setSessionName] = useState("");
       const fileRef = useRef();
       const combinedDataRef = useRef(null);
+      const initialLoadDone = useRef(false);
 
       const [lastSaved, setLastSaved] = useState(null);
       const markSaved = () => setLastSaved(new Date().toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
@@ -1083,26 +1086,66 @@
       const [showNewMonth, setShowNewMonth] = useState(false);
       const [newMonthDraft, setNewMonthDraft] = useState(null);
 
-      useEffect(() => { saveEmployees(employees); markSaved(); }, [employees]);
-      useEffect(() => { saveMonthCfg(monthCfg); markSaved(); }, [monthCfg]);
-
-      // Restore scan data on first load
+      // Auto-save to cloud + localStorage (skip during initial load)
       useEffect(() => {
-        const data = loadCurrentScanData();
-        if (!data) return;
-        combinedDataRef.current = data;
-        const emps = loadEmployees();
-        const cfg = loadMonthCfg();
-        const res = {};
-        emps.forEach(emp => {
-          const empData = data[emp.code] || [];
-          if (empData.some(row => row.scans.some(s => s !== null)))
-            res[emp.code] = computeSalary(emp, empData, cfg);
+        if (!initialLoadDone.current) return;
+        saveEmployees(employees); markSaved();
+        apiCall('POST', '/api/config/employees', { value: employees });
+      }, [employees]);
+      useEffect(() => {
+        if (!initialLoadDone.current) return;
+        saveMonthCfg(monthCfg); markSaved();
+        apiCall('POST', '/api/config/monthCfg', { value: monthCfg });
+      }, [monthCfg]);
+
+      // Initial load: fetch all data from cloud, fall back to localStorage
+      useEffect(() => {
+        if (!authSession) { setAppLoading(false); return; }
+        Promise.all([
+          apiCall('GET', '/api/config/employees'),
+          apiCall('GET', '/api/config/monthCfg'),
+          apiCall('GET', '/api/sessions'),
+          apiCall('GET', '/api/users'),
+        ]).then(([empsRes, cfgRes, sessionsRes, usersRes]) => {
+          if (empsRes.ok && empsRes.data) { setEmployees(empsRes.data); localStorage.setItem("ssc_employees", JSON.stringify(empsRes.data)); }
+          if (cfgRes.ok && cfgRes.data)   { setMonthCfg(cfgRes.data);  localStorage.setItem("ssc_monthCfg",  JSON.stringify(cfgRes.data));  }
+          if (sessionsRes.ok && sessionsRes.data) { setSessions(sessionsRes.data); localStorage.setItem("ssc_sessions", JSON.stringify(sessionsRes.data)); }
+          if (usersRes.ok && usersRes.data) setAuthUsers(usersRes.data);
+          setCloudSync(empsRes.ok);
+          // Restore current scan data from localStorage
+          const data = loadCurrentScanData();
+          if (data) {
+            combinedDataRef.current = data;
+            const emps = empsRes.ok && empsRes.data ? empsRes.data : loadEmployees();
+            const cfg  = cfgRes.ok  && cfgRes.data  ? cfgRes.data  : loadMonthCfg();
+            const res = {};
+            emps.forEach(emp => {
+              const empData = data[emp.code] || [];
+              if (empData.some(row => row.scans.some(s => s !== null)))
+                res[emp.code] = computeSalary(emp, empData, cfg);
+            });
+            if (Object.keys(res).length > 0) { setResults(res); setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ"); }
+          }
+          initialLoadDone.current = true;
+          setAppLoading(false);
+        }).catch(() => {
+          // Full localStorage fallback
+          const data = loadCurrentScanData();
+          if (data) {
+            combinedDataRef.current = data;
+            const emps = loadEmployees(); const cfg = loadMonthCfg();
+            const res = {};
+            emps.forEach(emp => {
+              const empData = data[emp.code] || [];
+              if (empData.some(row => row.scans.some(s => s !== null)))
+                res[emp.code] = computeSalary(emp, empData, cfg);
+            });
+            if (Object.keys(res).length > 0) { setResults(res); setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ"); }
+          }
+          setCloudSync(false);
+          initialLoadDone.current = true;
+          setAppLoading(false);
         });
-        if (Object.keys(res).length > 0) {
-          setResults(res);
-          setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ");
-        }
       }, []);
 
       // Recompute results in real-time whenever employees or monthCfg changes
@@ -1201,21 +1244,20 @@
         setTab("results");
       }, [employees, monthCfg]);
 
-      const saveCurrentSession = () => {
+      const saveCurrentSession = async () => {
         if (!combinedDataRef.current) return;
         const label = sessionName.trim() || monthCfg.label;
         const newSession = {
-          id: Date.now(),
-          label,
-          monthCfg,
-          scanData: combinedDataRef.current,
-          employees,
+          id: Date.now(), label, monthCfg,
+          scanData: combinedDataRef.current, employees,
           employeeCount: Object.keys(combinedDataRef.current).filter(code =>
             (combinedDataRef.current[code] || []).some(r => r.scans.some(s => s !== null))
           ).length,
           savedAt: new Date().toLocaleString("lo-LA", { dateStyle: "medium", timeStyle: "short" }),
         };
-        const updated = [newSession, ...sessions];
+        await apiCall('POST', '/api/sessions', newSession);
+        const r = await apiCall('GET', '/api/sessions');
+        const updated = r.ok && r.data ? r.data : [newSession, ...sessions];
         setSessions(updated);
         saveSessions(updated);
         setShowSaveSession(false);
@@ -1270,7 +1312,8 @@
         setTab("results");
       };
 
-      const deleteSession = (id) => {
+      const deleteSession = async (id) => {
+        await apiCall('DELETE', `/api/sessions/${id}`);
         const updated = sessions.filter(s => s.id !== id);
         setSessions(updated);
         saveSessions(updated);
@@ -1381,29 +1424,41 @@
 
       // ── Auth helpers (after all hooks) ──────────────────────────────────────
       const logout = () => { clearAuthSession(); setAuthSessionState(null); };
-      const addUser = () => {
-        const u = newUserForm.username.trim();
-        const p = newUserForm.password.trim();
+      const refreshUsers = async () => {
+        const r = await apiCall('GET', '/api/users');
+        if (r.ok && r.data) setAuthUsers(r.data);
+      };
+      const addUser = async () => {
+        const u = newUserForm.username.trim(), p = newUserForm.password.trim();
         if (!u || !p) { setUserMsg('ກະລຸນາໃສ່ຊື່ ແລະ ລະຫັດ'); return; }
-        if (authUsers.find(x => x.username === u)) { setUserMsg('ຊື່ຜູ້ໃຊ້ນີ້ມີຢູ່ແລ້ວ'); return; }
-        const updated = [...authUsers, { username: u, password: p, role: newUserForm.role }];
-        setAuthUsers(updated); saveAuthUsers(updated);
-        setNewUserForm({ username: '', password: '', role: 'user' });
-        setUserMsg(`✅ ເພີ່ມ "${u}" ສຳເລັດ`);
+        const r = await apiCall('POST', '/api/users', { username: u, password: p, role: newUserForm.role });
+        if (r.ok) {
+          setNewUserForm({ username: '', password: '', role: 'user' });
+          setUserMsg(`✅ ເພີ່ມ "${u}" ສຳເລັດ`);
+          refreshUsers();
+        } else { setUserMsg(r.data?.error || 'ເກີດຂໍ້ຜິດພາດ'); }
       };
-      const deleteUser = (username) => {
+      const deleteUser = async (username) => {
         if (username === authSession?.username) { setUserMsg('ບໍ່ສາມາດລຶບຕົນເອງ'); return; }
-        const updated = authUsers.filter(x => x.username !== username);
-        setAuthUsers(updated); saveAuthUsers(updated);
+        await apiCall('DELETE', `/api/users/${username}`);
         setUserMsg(`🗑️ ລຶບ "${username}" ແລ້ວ`);
+        refreshUsers();
       };
-      const changePassword = (username, newPw) => {
+      const changePassword = async (username, newPw) => {
         if (!newPw.trim()) return;
-        const updated = authUsers.map(x => x.username === username ? { ...x, password: newPw.trim() } : x);
-        setAuthUsers(updated); saveAuthUsers(updated);
+        await apiCall('PATCH', `/api/users/${username}/password`, { password: newPw.trim() });
         setUserMsg(`✅ ປ່ຽນລະຫັດ "${username}" ແລ້ວ`);
       };
 
+      if (appLoading) return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-900 to-indigo-900 flex items-center justify-center">
+          <div className="text-white text-center">
+            <div className="text-5xl mb-4 animate-pulse">☁️</div>
+            <p className="font-black text-xl">ກຳລັງໂຫລດຂໍ້ມູນ...</p>
+            <p className="text-blue-300 text-sm mt-1 font-bold">Loading from cloud database</p>
+          </div>
+        </div>
+      );
       if (!authSession) return <LoginScreen onLogin={(user) => setAuthSessionState(user)} />;
 
       return (
@@ -1425,6 +1480,9 @@
                   {lastSaved && (
                     <p className="text-[10px] text-emerald-400 font-bold mt-1">✓ Auto-saved {lastSaved}</p>
                   )}
+                  <p className={`text-[10px] font-bold mt-0.5 ${cloudSync ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                    {cloudSync ? '☁️ Cloud Synced' : '💾 Local Only'}
+                  </p>
                 </div>
                 <div className="flex flex-col items-end gap-1.5">
                   <div className="flex items-center gap-2 bg-white/10 rounded-xl px-3 py-1.5">
