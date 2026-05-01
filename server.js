@@ -12,9 +12,10 @@ let pool = null;
 let dbReady = false;
 let dbError = null;
 
-if (process.env.DATABASE_URL) {
+const DB_URL = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
+if (DB_URL) {
   pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: DB_URL,
     ssl: { rejectUnauthorized: false },
   });
 }
