@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static(__dirname));
+// API routes are registered before static so they are never blocked by file serving
 
 let pool = null;
 let dbReady = false;
@@ -178,6 +178,8 @@ app.delete('/api/sessions/:id', requireDB, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Static files served AFTER all API routes
+app.use(express.static(__dirname));
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'sengchanh-salary-calculator.html'));
 });
