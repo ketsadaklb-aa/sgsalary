@@ -1106,21 +1106,22 @@
           apiCall('GET', '/api/config/monthCfg'),
           apiCall('GET', '/api/sessions'),
           apiCall('GET', '/api/users'),
-        ]).then(([empsRes, cfgRes, sessionsRes, usersRes]) => {
+        ]).then(async ([empsRes, cfgRes, sessionsRes, usersRes]) => {
           if (empsRes.ok && empsRes.data) { setEmployees(empsRes.data); localStorage.setItem("ssc_employees", JSON.stringify(empsRes.data)); }
           if (cfgRes.ok && cfgRes.data)   { setMonthCfg(cfgRes.data);  localStorage.setItem("ssc_monthCfg",  JSON.stringify(cfgRes.data));  }
           if (sessionsRes.ok && sessionsRes.data) { setSessions(sessionsRes.data); localStorage.setItem("ssc_sessions", JSON.stringify(sessionsRes.data)); }
           if (usersRes.ok && usersRes.data) setAuthUsers(usersRes.data);
           setCloudSync(empsRes.ok);
-          // Restore current scan data from localStorage
-          const data = loadCurrentScanData();
-          if (data) {
-            combinedDataRef.current = data;
+          // Restore active work from DB (primary) then localStorage (fallback)
+          const activeRes = await apiCall('GET', `/api/active-work?u=${encodeURIComponent(authSession.username)}`);
+          const activeData = activeRes.ok && activeRes.data ? activeRes.data.scanData : loadCurrentScanData();
+          if (activeData) {
+            combinedDataRef.current = activeData;
             const emps = empsRes.ok && empsRes.data ? empsRes.data : loadEmployees();
-            const cfg  = cfgRes.ok  && cfgRes.data  ? cfgRes.data  : loadMonthCfg();
+            const cfg  = (activeRes.ok && activeRes.data?.monthCfg) || (cfgRes.ok && cfgRes.data) || loadMonthCfg();
             const res = {};
             emps.forEach(emp => {
-              const empData = data[emp.code] || [];
+              const empData = activeData[emp.code] || [];
               if (empData.some(row => row.scans.some(s => s !== null)))
                 res[emp.code] = computeSalary(emp, empData, cfg);
             });
@@ -1231,6 +1232,9 @@
           if (hasValidScans) res[emp.code] = computeSalary(emp, data, detectedCfg);
         });
         setResults(res);
+        // Save active work to DB (no more localStorage-only)
+        saveCurrentScanData(combinedData); // keep local cache too
+        apiCall('POST', '/api/active-work', { username: authSession.username, scanData: combinedData, monthCfg: detectedCfg });
         // Merge newly discovered employees into state so they appear in Settings
         const newlyFound = Object.values(discoveredEmps);
         if (newlyFound.length > 0) {
@@ -1322,6 +1326,7 @@
       const clearCurrentWork = () => {
         combinedDataRef.current = null;
         localStorage.removeItem("ssc_currentScanData");
+        apiCall('DELETE', '/api/active-work', { username: authSession.username });
         setResults(null);
         setStatus("");
         setTab("upload");
@@ -1345,6 +1350,7 @@
         setEmployees(prev => prev.map(e => ({ ...e, advance: 0, special_bonus: 0 })));
         combinedDataRef.current = null;
         localStorage.removeItem("ssc_currentScanData");
+        apiCall('DELETE', '/api/active-work', { username: authSession.username });
         setResults(null);
         setStatus(`✅ ພ້ອມສຳລັບ ${newMonthDraft.label} — ອັບໂຫລດ CSV ໄດ້ເລີຍ`);
         setShowNewMonth(false);

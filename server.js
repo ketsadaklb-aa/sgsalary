@@ -1,12 +1,14 @@
 const express = require('express');
 const path = require('path');
 const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SALT_ROUNDS = 10;
 
 app.use(express.json({ limit: '50mb' }));
-// API routes are registered before static so they are never blocked by file serving
+// All API routes registered before static middleware
 
 let pool = null;
 let dbReady = false;
@@ -14,26 +16,19 @@ let dbError = null;
 
 const DB_URL = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 if (DB_URL) {
-  pool = new Pool({
-    connectionString: DB_URL,
-    ssl: { rejectUnauthorized: false },
-  });
+  pool = new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
 }
 
 async function initDB() {
-  if (!pool) {
-    dbError = 'No DATABASE_URL set';
-    console.log('No DATABASE_URL — running without cloud DB');
-    return;
-  }
+  if (!pool) { dbError = 'No DATABASE_URL set'; console.log('No DATABASE_URL — running without cloud DB'); return; }
   try {
     console.log('Connecting to DB...');
-    await pool.query('SELECT 1'); // test connection
+    await pool.query('SELECT 1');
     console.log('DB connection OK, creating tables...');
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         username VARCHAR(100) PRIMARY KEY,
-        password VARCHAR(100) NOT NULL,
+        password VARCHAR(200) NOT NULL,
         role VARCHAR(20) NOT NULL DEFAULT 'user'
       );
       CREATE TABLE IF NOT EXISTS app_config (
@@ -51,14 +46,19 @@ async function initDB() {
         saved_at VARCHAR(100),
         created_at TIMESTAMP DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS active_work (
+        username VARCHAR(100) PRIMARY KEY,
+        scan_data JSONB,
+        month_cfg JSONB,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
     `);
+    // Seed default admin if no users exist
     const { rows } = await pool.query('SELECT COUNT(*) FROM users');
     if (parseInt(rows[0].count) === 0) {
-      await pool.query(
-        'INSERT INTO users (username, password, role) VALUES ($1, $2, $3)',
-        ['admin', 'admin123', 'admin']
-      );
-      console.log('Default admin user created (admin / admin123)');
+      const hash = await bcrypt.hash('admin123', SALT_ROUNDS);
+      await pool.query('INSERT INTO users (username, password, role) VALUES ($1, $2, $3)', ['admin', hash, 'admin']);
+      console.log('Default admin created (admin / admin123)');
     }
     dbReady = true;
     console.log('PostgreSQL ready');
@@ -68,25 +68,37 @@ async function initDB() {
   }
 }
 
-app.get('/api/health', (req, res) => {
-  res.json({ dbReady, dbError, hasUrl: !!process.env.DATABASE_URL });
-});
-
 const requireDB = (req, res, next) => {
   if (!dbReady) return res.status(503).json({ error: 'Database not available' });
   next();
 };
 
+// ─── HEALTH ────────────────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({ dbReady, dbError, hasUrl: !!DB_URL });
+});
+
 // ─── AUTH ──────────────────────────────────────────────────────────────────────
 app.post('/api/auth/login', requireDB, async (req, res) => {
   try {
     const { username, password } = req.body;
-    const { rows } = await pool.query(
-      'SELECT username, role FROM users WHERE username=$1 AND password=$2',
-      [username?.trim(), password]
-    );
+    const { rows } = await pool.query('SELECT username, role, password FROM users WHERE username=$1', [username?.trim()]);
     if (!rows.length) return res.status(401).json({ error: 'ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ' });
-    res.json(rows[0]);
+    const user = rows[0];
+    let valid = false;
+    if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+      valid = await bcrypt.compare(password, user.password);
+    } else {
+      // Plain text legacy — compare then migrate to hash
+      valid = user.password === password;
+      if (valid) {
+        const hash = await bcrypt.hash(password, SALT_ROUNDS);
+        await pool.query('UPDATE users SET password=$1 WHERE username=$2', [hash, user.username]);
+        console.log(`Migrated ${user.username} password to bcrypt`);
+      }
+    }
+    if (!valid) return res.status(401).json({ error: 'ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ' });
+    res.json({ username: user.username, role: user.role });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -101,10 +113,8 @@ app.get('/api/users', requireDB, async (req, res) => {
 app.post('/api/users', requireDB, async (req, res) => {
   try {
     const { username, password, role } = req.body;
-    await pool.query(
-      'INSERT INTO users (username, password, role) VALUES ($1, $2, $3)',
-      [username?.trim(), password?.trim(), role || 'user']
-    );
+    const hash = await bcrypt.hash(password?.trim(), SALT_ROUNDS);
+    await pool.query('INSERT INTO users (username, password, role) VALUES ($1, $2, $3)', [username?.trim(), hash, role || 'user']);
     res.json({ ok: true });
   } catch (e) {
     if (e.code === '23505') return res.status(400).json({ error: 'ຊື່ຜູ້ໃຊ້ນີ້ມີຢູ່ແລ້ວ' });
@@ -121,7 +131,8 @@ app.delete('/api/users/:username', requireDB, async (req, res) => {
 
 app.patch('/api/users/:username/password', requireDB, async (req, res) => {
   try {
-    await pool.query('UPDATE users SET password=$1 WHERE username=$2', [req.body.password?.trim(), req.params.username]);
+    const hash = await bcrypt.hash(req.body.password?.trim(), SALT_ROUNDS);
+    await pool.query('UPDATE users SET password=$1 WHERE username=$2', [hash, req.params.username]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -141,6 +152,38 @@ app.post('/api/config/:key', requireDB, async (req, res) => {
        ON CONFLICT (key) DO UPDATE SET value=$2::jsonb, updated_at=NOW()`,
       [req.params.key, JSON.stringify(req.body.value)]
     );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── ACTIVE WORK (current CSV session per user) ────────────────────────────────
+app.get('/api/active-work', requireDB, async (req, res) => {
+  try {
+    const username = req.query.u;
+    if (!username) return res.status(400).json({ error: 'Missing username' });
+    const { rows } = await pool.query('SELECT scan_data, month_cfg FROM active_work WHERE username=$1', [username]);
+    res.json(rows.length ? { scanData: rows[0].scan_data, monthCfg: rows[0].month_cfg } : null);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/active-work', requireDB, async (req, res) => {
+  try {
+    const { username, scanData, monthCfg } = req.body;
+    if (!username) return res.status(400).json({ error: 'Missing username' });
+    await pool.query(
+      `INSERT INTO active_work (username, scan_data, month_cfg, updated_at) VALUES ($1, $2::jsonb, $3::jsonb, NOW())
+       ON CONFLICT (username) DO UPDATE SET scan_data=$2::jsonb, month_cfg=$3::jsonb, updated_at=NOW()`,
+      [username, JSON.stringify(scanData), JSON.stringify(monthCfg)]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/active-work', requireDB, async (req, res) => {
+  try {
+    const username = req.body.username || req.query.u;
+    if (!username) return res.status(400).json({ error: 'Missing username' });
+    await pool.query('DELETE FROM active_work WHERE username=$1', [username]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -179,7 +222,7 @@ app.delete('/api/sessions/:id', requireDB, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Static files served AFTER all API routes
+// Static files AFTER all API routes
 app.use(express.static(__dirname));
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'sengchanh-salary-calculator.html'));
