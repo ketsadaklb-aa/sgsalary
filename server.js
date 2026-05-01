@@ -12,9 +12,10 @@ let pool = null;
 let dbReady = false;
 
 if (process.env.DATABASE_URL) {
+  const isInternal = process.env.DATABASE_URL.includes('railway.internal');
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: isInternal ? false : { rejectUnauthorized: false },
   });
 }
 
