@@ -1,0 +1,2241 @@
+<!DOCTYPE html>
+<html lang="lo">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sengchanh Salary Calculator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Lao+Looped:wght@400;700;900&display=swap" rel="stylesheet" />
+  <style>
+    * { font-family: 'Noto Sans Lao Looped', sans-serif; }
+    .animate-in { animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    // ─── NumericInput ────────────────────────────────────────────────────────
+    const NumericInput = ({ value, onChange, className, placeholder }) => {
+      const format = (val) => {
+        if (val === undefined || val === null || val === "") return "";
+        const num = val.toString().replace(/,/g, "");
+        return num.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+      };
+      const handleChange = (e) => {
+        const rawValue = e.target.value.replace(/,/g, "");
+        if (/^\d*$/.test(rawValue)) {
+          onChange(rawValue === "" ? 0 : parseInt(rawValue));
+        }
+      };
+      return (
+        <input type="text" className={className} value={format(value)} onChange={handleChange} placeholder={placeholder} />
+      );
+    };
+
+    // ─── DEFAULT DATA ────────────────────────────────────────────────────────
+    const DEFAULT_EMPLOYEES = [
+      { code: "6",  name: "Tun",        scan: 4, base: 3000000, special_bonus: 0,       advance: 150000  },
+      { code: "7",  name: "Dam",        scan: 4, base: 5000000, special_bonus: 0,       advance: 400000  },
+      { code: "9",  name: "Thongkham",  scan: 4, base: 5000000, special_bonus: 0,       advance: 0       },
+      { code: "13", name: "Maih",       scan: 2, base: 6000000, special_bonus: 1080000, advance: 0       },
+      { code: "14", name: "Ther",       scan: 2, base: 2500000, special_bonus: 0,       advance: 150000  },
+      { code: "18", name: "Bounzu",     scan: 2, base: 8000000, special_bonus: 0,       advance: 0       },
+      { code: "22", name: "Nik",        scan: 4, base: 3000000, special_bonus: 0,       advance: 1890000 },
+      { code: "24", name: "Noy",        scan: 4, base: 4000000, special_bonus: 0,       advance: 0       },
+      { code: "25", name: "Nut",        scan: 4, base: 3000000, special_bonus: 0,       advance: 150000  },
+      { code: "30", name: "Mon",        scan: 4, base: 4000000, special_bonus: 0,       advance: 0       },
+      { code: "37", name: "Korng",      scan: 4, base: 3000000, special_bonus: 0,       advance: 150000  },
+      { code: "39", name: "Khammanh",   scan: 4, base: 5000000, special_bonus: 0,       advance: 2150000 },
+      { code: "42", name: "Thongkeo",   scan: 4, base: 3000000, special_bonus: 0,       advance: 150000  },
+      { code: "45", name: "Got",        scan: 4, base: 2500000, special_bonus: 0,       advance: 150000  },
+      { code: "48", name: "Boy",        scan: 4, base: 0,       special_bonus: 0,       advance: 150000  },
+      { code: "49", name: "Cho",        scan: 4, base: 3000000, special_bonus: 0,       advance: 0       },
+      { code: "50", name: "Biw",        scan: 4, base: 1500000, special_bonus: 0,       advance: 350000  },
+    ];
+
+    const OT_MORNING  = 8 * 60;
+    const OT_EVENING  = 18 * 60 + 30;
+    const BREAK_MINS  = 40;
+    const MID_DAY     = 12 * 60 + 30;
+
+    const DEFAULT_MONTH = {
+      label:     "ກຸມພາ 2026",
+      year:      2026,
+      month:     2,
+      totalDays: 28,
+      sundays:   4,
+      otRate:    30000,
+      holidays:  [],
+    };
+
+    // ─── HELPERS ─────────────────────────────────────────────────────────────
+    const parseTime = (s) => {
+      if (!s || !s.trim()) return null;
+      const p = s.trim().split(":");
+      if (p.length < 2) return null;
+      return parseInt(p[0]) * 60 + parseInt(p[1]);
+    };
+
+    const formatMinsToClock = (m) => {
+      if (m === null) return "--:--";
+      const h = Math.floor(m / 60);
+      const min = m % 60;
+      return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    };
+
+    const getOrdinal = (n) => {
+      const s = ["th", "st", "nd", "rd"], v = n % 100;
+      return s[(v - 20) % 10] || s[v] || s[0];
+    };
+
+    const getDayInfo = (dateStr) => {
+      if (!dateStr) return { isSunday: false, day: 0 };
+      const delimiter = dateStr.includes("-") ? "-" : "/";
+      const parts = dateStr.split(delimiter);
+      if (parts.length !== 3) return { isSunday: false, day: 0 };
+      let date;
+      if (delimiter === "-") {
+        const [y, m, d] = parts.map(Number);
+        date = new Date(y, m - 1, d);
+      } else {
+        const [d, m, y] = parts.map(Number);
+        date = new Date(y, m - 1, d);
+      }
+      return { isSunday: date.getDay() === 0, day: date.getDate(), dateObj: date };
+    };
+
+    const minsToH = (m) => m / 60;
+    const fmtHours = (h) => {
+      const t = Math.round(h * 60);
+      return `${Math.floor(t / 60)}ຊມ ${String(t % 60).padStart(2, "0")}ນ`;
+    };
+    const fmt = (n) => Math.round(n).toLocaleString();
+
+    const getClusters = (scans, threshold = 15) => {
+      const sorted = scans.filter(s => s !== null).sort((a, b) => a - b);
+      if (sorted.length === 0) return [];
+      const clusters = [[sorted[0]]];
+      for (let i = 1; i < sorted.length; i++) {
+        const lastCluster = clusters[clusters.length - 1];
+        if (sorted[i] - lastCluster[lastCluster.length - 1] <= threshold) {
+          lastCluster.push(sorted[i]);
+        } else {
+          clusters.push([sorted[i]]);
+        }
+      }
+      return clusters;
+    };
+
+    // ─── CALCULATIONS ─────────────────────────────────────────────────────────
+    const calcDay2Scan = (scans) => {
+      const clusters = getClusters(scans);
+      if (clusters.length < 2) return null;
+      const F = clusters[0][0];
+      const G = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
+      if (G <= F) return null;
+      const totalM = G - F;
+      const morOT = Math.max(0, OT_MORNING - F);
+      const eveOT = Math.max(0, G - OT_EVENING);
+      const otM = morOT + eveOT;
+      const netM = Math.max(0, totalM - BREAK_MINS - otM);
+      let dayVal = 1.0;
+      if (totalM < 300) dayVal = 0.5;
+      return { otH: minsToH(otM), netM, dayVal };
+    };
+
+    const calcDay4Scan = (scans) => {
+      const clusters = getClusters(scans);
+      if (clusters.length < 1) return null;
+      const firstScan = clusters[0][0];
+      const lastScan = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
+      let dayVal = 0, netM = 0, otH = 0, isHalfDay = false;
+      if (lastScan < MID_DAY - 30) {
+        const F = clusters[0][0], G = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
+        netM = Math.max(0, G - Math.max(F, OT_MORNING)); dayVal = 0.5; isHalfDay = true;
+      } else if (firstScan >= MID_DAY - 15) {
+        const H = clusters[0][0], I = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
+        netM = Math.max(0, Math.min(I, OT_EVENING) - H); dayVal = 0.5; isHalfDay = true;
+      } else {
+        let F, G, H, I;
+        if (clusters.length >= 4) {
+          F = clusters[0][0]; G = clusters[1][clusters[1].length - 1];
+          H = clusters[clusters.length - 2][0]; I = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
+          netM = (G - F) + (I - H);
+        } else {
+          F = firstScan; I = lastScan; netM = I - F - BREAK_MINS;
+        }
+        dayVal = 1.0;
+        const morOT = Math.max(0, OT_MORNING - F);
+        const eveOT = Math.max(0, I - OT_EVENING);
+        otH = minsToH(morOT + eveOT);
+        // recalculate netM excluding OT periods (cap F at 8AM, I at 6:30PM)
+        if (clusters.length >= 4) {
+          netM = (G - Math.max(F, OT_MORNING)) + (Math.min(I, OT_EVENING) - H);
+        } else {
+          netM = Math.min(I, OT_EVENING) - Math.max(F, OT_MORNING) - BREAK_MINS;
+        }
+      }
+      return { otH, netM, dayVal, isHalfDay };
+    };
+
+    const detectScanMode = (data) => {
+      const counts = data.map(row => row.scans.filter(s => s !== null).length).filter(c => c > 0);
+      if (counts.length === 0) return 4;
+      const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
+      return avg <= 2.5 ? 2 : 4;
+    };
+
+    const computeSalary = (emp, dailyRows, monthCfg) => {
+      // Derive the true year/month from the actual CSV dateStr — never trust monthCfg alone
+      let dataYear = monthCfg.year, dataMonth = monthCfg.month;
+      for (const row of dailyRows) {
+        const info = getDayInfo(row.dateStr);
+        if (info.dateObj) { dataYear = info.dateObj.getFullYear(); dataMonth = info.dateObj.getMonth() + 1; break; }
+      }
+      const dataTotalDays = new Date(dataYear, dataMonth, 0).getDate();
+
+      // All configured holidays count toward EXPECTED_DAYS (including Sunday ones)
+      const holidayMap = new Map((monthCfg.holidays || [])
+        .filter(h => { const d = typeof h === 'object' ? Number(h.date) : Number(h); return d >= 1 && d <= dataTotalDays; })
+        .map(h => typeof h === 'object' ? [Number(h.date), h.name || ''] : [Number(h), '']));
+      // Weekday holidays only get pay credit (Sunday holidays give no credit — already a free day)
+      const weekdayHolidayCount = [...holidayMap.keys()]
+        .filter(d => new Date(dataYear, dataMonth - 1, d).getDay() !== 0).length;
+      // RATE_DAYS: auto-compute sundays from the actual data year/month
+      let _sundays = 0;
+      for (let _d = 1; _d <= dataTotalDays; _d++)
+        if (new Date(dataYear, dataMonth - 1, _d).getDay() === 0) _sundays++;
+      const RATE_DAYS = dataTotalDays - _sundays;
+      // EXPECTED_DAYS: days employee is expected to attend (all holidays reduce this)
+      const EXPECTED_DAYS = RATE_DAYS - holidayMap.size;
+      const OT_RATE = monthCfg.otRate;
+
+      // 2-scan: standard = 10h30m (630 min) gross span 8:00–18:30
+      // 4-scan: standard = 9h50m (590 min) net work (630 gross − 40 min lunch)
+      const standardMinsPerDay = emp.scan === 2 ? 630 : 590;
+      // hourlyRate always based on RATE_DAYS — holidays never change the rate
+      const hourlyRate = emp.base > 0 ? emp.base * 60 / (RATE_DAYS * standardMinsPerDay) : 0;
+
+      let otH = 0, attendedDays = 0, totalPayMins = 0;
+      const presenceMap = new Map();
+
+      // Pre-pass: compute average scan times from complete days for filling missing scans
+      let avgInTime = null, avgOutTime = null;
+      let avg4InAM = null, avg4OutAM = null, avg4InPM = null, avg4OutPM = null;
+      if (emp.scan === 2) {
+        const completeDays = dailyRows.filter(r => getClusters(r.scans).length >= 2);
+        if (completeDays.length > 0) {
+          const ins  = completeDays.map(r => getClusters(r.scans)[0][0]);
+          const outs = completeDays.map(r => { const c = getClusters(r.scans); return c[c.length-1][c[c.length-1].length-1]; });
+          avgInTime  = Math.round(ins.reduce((a, b) => a + b, 0) / ins.length);
+          avgOutTime = Math.round(outs.reduce((a, b) => a + b, 0) / outs.length);
+        }
+      } else if (emp.scan === 4) {
+        const complete4 = dailyRows.filter(r => getClusters(r.scans).length >= 4);
+        if (complete4.length > 0) {
+          const avg = (arr) => Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+          avg4InAM  = avg(complete4.map(r => getClusters(r.scans)[0][0]));
+          avg4OutAM = avg(complete4.map(r => { const c = getClusters(r.scans); return c[1][c[1].length-1]; }));
+          avg4InPM  = avg(complete4.map(r => { const c = getClusters(r.scans); return c[c.length-2][0]; }));
+          avg4OutPM = avg(complete4.map(r => { const c = getClusters(r.scans); return c[c.length-1][c[c.length-1].length-1]; }));
+        }
+      }
+
+      for (const row of dailyRows) {
+        const info = getDayInfo(row.dateStr);
+        const validCount = row.scans.filter(s => s !== null).length;
+        if (validCount > 0) {
+          const clusters = getClusters(row.scans);
+          const res = emp.scan === 2 ? calcDay2Scan(row.scans) : calcDay4Scan(row.scans);
+          let warning = "";
+          let usedClusterIdxs = new Set();
+
+          if (!res) {
+            // 2-scan with only 1 cluster — try to fill missing scan with monthly average
+            const singleTime = clusters[0][0];
+            const isSingleIN = singleTime < MID_DAY;
+            if (avgInTime !== null && avgOutTime !== null) {
+              const filledTime  = isSingleIN ? avgOutTime : avgInTime;
+              const filledScans = isSingleIN ? [singleTime, avgOutTime] : [avgInTime, singleTime];
+              const filledRes   = calcDay2Scan(filledScans);
+              if (filledRes) {
+                const noteType = isSingleIN ? 'OUT' : 'IN';
+                warning = `ສະແກນດຽວ → ໃຊ້ ${noteType} ສະເລ່ຍ [${formatMinsToClock(filledTime)}]`;
+                usedClusterIdxs.add(0);
+                presenceMap.set(info.day, { ...row, warning, validCount, dayVal: filledRes.dayVal, netM: filledRes.netM, clusters, usedClusterIdxs, filledScan: { time: filledTime, type: noteType } });
+                if (info.isSunday) {
+                  // Sunday attendance tracked but no pay adjustment
+                } else if (holidayMap.has(info.day)) {
+                  otH += filledRes.otH;
+                } else {
+                  attendedDays += filledRes.dayVal;
+                  otH += filledRes.otH;
+                  const payMins2 = Math.min(filledRes.netM + BREAK_MINS, standardMinsPerDay);
+                  totalPayMins += payMins2;
+
+                }
+              } else {
+                warning = "ສະແກນດຽວ (ຂາດ)";
+                presenceMap.set(info.day, { ...row, warning, validCount, dayVal: 0, netM: 0, clusters, usedClusterIdxs, countAsAbsent: true });
+              }
+            } else {
+              // No average available yet — treat as absent
+              warning = "ສະແກນດຽວ (ຂາດ)";
+              presenceMap.set(info.day, { ...row, warning, validCount, dayVal: 0, netM: 0, clusters, usedClusterIdxs, countAsAbsent: true });
+            }
+          } else {
+            let effectiveRes = res;
+            let filledScan4 = null;
+
+            if (res.isHalfDay) {
+              warning = "ມາເຄິ່ງວັນ (0.5)";
+              usedClusterIdxs.add(0);
+              usedClusterIdxs.add(clusters.length - 1);
+            } else if (clusters.length < emp.scan) {
+              // Try to fill missing 4-scan data with monthly averages
+              // (only when scans span noon — i.e. not a half day)
+              if (emp.scan === 4 && avg4InAM !== null) {
+                const n = clusters.length;
+                let filledTimes = null, entries = [];
+                if (n === 3) {
+                  const midRep = (clusters[1][0] + clusters[1][clusters[1].length-1]) / 2;
+                  if (midRep < MID_DAY) {
+                    // Have IN_AM, OUT_AM, OUT_PM — missing IN_PM
+                    filledTimes = [clusters[0][0], clusters[1][clusters[1].length-1], avg4InPM, clusters[2][clusters[2].length-1]];
+                    entries = [{ time: avg4InPM, type: 'IN_PM' }];
+                  } else {
+                    // Have IN_AM, IN_PM, OUT_PM — missing OUT_AM
+                    filledTimes = [clusters[0][0], avg4OutAM, clusters[1][0], clusters[2][clusters[2].length-1]];
+                    entries = [{ time: avg4OutAM, type: 'OUT_AM' }];
+                  }
+                } else if (n === 2) {
+                  // Have IN_AM + OUT_PM — missing OUT_AM and IN_PM
+                  filledTimes = [clusters[0][0], avg4OutAM, avg4InPM, clusters[1][clusters[1].length-1]];
+                  entries = [{ time: avg4OutAM, type: 'OUT_AM' }, { time: avg4InPM, type: 'IN_PM' }];
+                }
+                if (filledTimes) {
+                  const tryRes = calcDay4Scan(filledTimes);
+                  if (tryRes && !tryRes.isHalfDay) {
+                    effectiveRes = tryRes;
+                    filledScan4 = entries;
+                    warning = `ສະແກນ ${n}/4 → ໃຊ້ສະເລ່ຍ: ${entries.map(e => `${e.type} [~${formatMinsToClock(e.time)}]`).join(', ')}`;
+                    clusters.forEach((_, i) => usedClusterIdxs.add(i));
+                  }
+                }
+              }
+              if (!filledScan4) {
+                // Half day or no average: show existing times used
+                const usedIn  = formatMinsToClock(clusters[0][0]);
+                const usedOut = formatMinsToClock(clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1]);
+                warning = `ສະແກນ ${clusters.length}/${emp.scan} → [${usedIn}–${usedOut}]`;
+                usedClusterIdxs.add(0);
+                usedClusterIdxs.add(clusters.length - 1);
+              }
+            } else if (clusters.length > emp.scan) {
+              warning = `ສະແກນ ${clusters.length} ຄັ້ງ (ເກີນ ${emp.scan})`;
+              if (emp.scan === 2) {
+                usedClusterIdxs.add(0);
+                usedClusterIdxs.add(clusters.length - 1);
+              } else {
+                usedClusterIdxs.add(0); usedClusterIdxs.add(1);
+                usedClusterIdxs.add(clusters.length - 2); usedClusterIdxs.add(clusters.length - 1);
+              }
+            } else {
+              clusters.forEach((_, i) => usedClusterIdxs.add(i));
+            }
+
+            presenceMap.set(info.day, { ...row, warning, validCount, dayVal: effectiveRes.dayVal, netM: effectiveRes.netM, clusters, usedClusterIdxs, ...(filledScan4 && { filledScan4 }) });
+
+            if (info.isSunday) {
+              // Sunday attendance
+            } else if (holidayMap.has(info.day)) {
+              // Holiday: still track OT if they came in, but base pay handled via credit below
+              otH += effectiveRes.otH;
+            } else {
+              attendedDays += effectiveRes.dayVal;
+              otH += effectiveRes.otH;
+              // Hourly pay: capped at standardMinsPerDay so OT never compensates for absent days
+              const payMins = Math.min(emp.scan === 2 ? effectiveRes.netM + BREAK_MINS : effectiveRes.netM, standardMinsPerDay);
+              totalPayMins += payMins;
+
+            }
+          }
+        }
+      }
+
+      const absentDates = [];
+      for (let d = 1; d <= dataTotalDays; d++) {
+        const dateObj = new Date(dataYear, dataMonth - 1, d);
+        if (dateObj.getDay() === 0) continue;
+        if (holidayMap.has(d)) continue; // public holiday — not counted as absent
+        const dayLog = presenceMap.get(d);
+        if (!dayLog || dayLog.countAsAbsent) absentDates.push(d);
+      }
+
+      // Holiday credit: only weekday holidays give pay credit (Sunday holidays = already free)
+      const holidayCredit = weekdayHolidayCount * standardMinsPerDay;
+      // Max possible pay = full RATE_DAYS worth of standard minutes
+      const maxPayMins = RATE_DAYS * standardMinsPerDay;
+      const cappedPayMins = Math.min(totalPayMins + holidayCredit, maxPayMins);
+
+      // Manual add-back hours (no OT — fills up to the cap only)
+      const addbackRawMins = Math.round((emp.addback_hrs || 0) * 60);
+      const addbackApplied = Math.max(0, Math.min(addbackRawMins, maxPayMins - cappedPayMins));
+      const totalPayMinsWithAddback = cappedPayMins + addbackApplied;
+
+      const basePay = emp.base;
+      const dailyRateKip = Math.round(standardMinsPerDay * hourlyRate / 60);
+      const rawWorkPay = Math.min(Math.round(totalPayMinsWithAddback * hourlyRate / 60), basePay);
+      // Absent penalty: 2× per absent day (extra 1× on top of the hours already not counted)
+      const absentPenalty = absentDates.length * dailyRateKip;
+      const workPay = Math.max(0, rawWorkPay - absentPenalty);
+      const absentDeduction = Math.round(basePay - workPay);
+      const otPay = otH * OT_RATE;
+      const otBonus = (emp.ot_bonus_enabled !== false) && otH > 15 && absentDates.length === 0 ? 1000000 : 0;
+      const totalGross = workPay + otPay + (emp.special_bonus || 0) + otBonus;
+      const netPay = totalGross - (emp.advance || 0);
+
+      return {
+        ...emp,
+        attended: attendedDays,
+        absent: absentDates.length,
+        otH,
+        basePay,
+        dailyRateKip,
+        rawWorkPay,
+        absentPenalty,
+        workPay,
+        absentDeduction,
+        hourlyRate,
+        totalPayMins: totalPayMinsWithAddback,
+        addbackApplied,
+        standardMinsPerDay,
+        otPay,
+        otBonus,
+        totalGross,
+        netPay,
+        absentDates,
+
+        dailyLog: presenceMap,
+        workingDays: EXPECTED_DAYS,
+        rateDays: RATE_DAYS,
+        scanMode: emp.scan,
+        dataYear,
+        dataMonth,
+        dataTotalDays,
+        hasIssues: Array.from(presenceMap.values()).some(l => l.warning !== ""),
+      };
+    };
+
+    // ─── PERSISTENCE HELPERS ─────────────────────────────────────────────────
+    const loadEmployees = () => {
+      try {
+        const saved = localStorage.getItem("ssc_employees");
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return DEFAULT_EMPLOYEES;
+    };
+
+    const saveEmployees = (list) => {
+      try { localStorage.setItem("ssc_employees", JSON.stringify(list)); } catch {}
+    };
+
+    const loadMonthCfg = () => {
+      try {
+        const saved = localStorage.getItem("ssc_monthCfg");
+        return saved ? JSON.parse(saved) : DEFAULT_MONTH;
+      } catch { return DEFAULT_MONTH; }
+    };
+    const saveMonthCfg = (cfg) => {
+      try { localStorage.setItem("ssc_monthCfg", JSON.stringify(cfg)); } catch {}
+    };
+
+    const loadCurrentScanData = () => {
+      try {
+        const saved = localStorage.getItem("ssc_currentScanData");
+        return saved ? JSON.parse(saved) : null;
+      } catch { return null; }
+    };
+    const saveCurrentScanData = (data) => {
+      try { localStorage.setItem("ssc_currentScanData", JSON.stringify(data)); } catch {}
+    };
+
+    const loadSessions = () => {
+      try { return JSON.parse(localStorage.getItem("ssc_sessions") || "[]"); } catch { return []; }
+    };
+    const saveSessions = (list) => {
+      try { localStorage.setItem("ssc_sessions", JSON.stringify(list)); } catch {}
+    };
+
+    // ─── AUTH HELPERS ─────────────────────────────────────────────────────────
+    const AUTH_USERS_KEY = 'ssc_auth_users';
+    const AUTH_SESSION_KEY = 'ssc_auth_session';
+
+    const getAuthUsers = () => {
+      try {
+        const saved = localStorage.getItem(AUTH_USERS_KEY);
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      const defaults = [{ username: 'admin', password: 'admin123', role: 'admin' }];
+      localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(defaults));
+      return defaults;
+    };
+    const saveAuthUsers = (list) => {
+      try { localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(list)); } catch {}
+    };
+    const getAuthSession = () => {
+      try { return JSON.parse(sessionStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch { return null; }
+    };
+    const setAuthSession = (user) => {
+      try { sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ username: user.username, role: user.role })); } catch {}
+    };
+    const clearAuthSession = () => {
+      try { sessionStorage.removeItem(AUTH_SESSION_KEY); } catch {}
+    };
+
+    // ─── LOGIN SCREEN ──────────────────────────────────────────────────────────
+    const LoginScreen = ({ onLogin }) => {
+      const [username, setUsername] = useState('');
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState('');
+      const [showPw, setShowPw] = useState(false);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        const users = getAuthUsers();
+        const match = users.find(u => u.username === username.trim() && u.password === password);
+        if (match) {
+          setAuthSession(match);
+          onLogin({ username: match.username, role: match.role });
+        } else {
+          setError('ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ');
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-900 to-indigo-900 flex items-center justify-center p-6">
+          <div className="bg-white rounded-3xl shadow-2xl p-10 w-full max-w-sm">
+            <div className="text-center mb-8">
+              <div className="text-5xl mb-3">🏦</div>
+              <h1 className="text-xl font-black uppercase tracking-tight">Sengchanh Salary</h1>
+              <p className="text-slate-400 font-bold text-xs mt-1 uppercase tracking-widest">ເຂົ້າສູ່ລະບົບ / Sign In</p>
+            </div>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">ຊື່ຜູ້ໃຊ້ / Username</label>
+                <input
+                  type="text" autoFocus autoComplete="username"
+                  value={username} onChange={e => { setUsername(e.target.value); setError(''); }}
+                  className="w-full p-3 border-2 rounded-xl font-bold focus:border-blue-500 outline-none transition-colors"
+                  placeholder="admin"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">ລະຫັດຜ່ານ / Password</label>
+                <div className="relative">
+                  <input
+                    type={showPw ? 'text' : 'password'} autoComplete="current-password"
+                    value={password} onChange={e => { setPassword(e.target.value); setError(''); }}
+                    className="w-full p-3 border-2 rounded-xl font-bold focus:border-blue-500 outline-none pr-10 transition-colors"
+                    placeholder="••••••••"
+                  />
+                  <button type="button" tabIndex={-1} onClick={() => setShowPw(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-sm font-black">
+                    {showPw ? '🙈' : '👁️'}
+                  </button>
+                </div>
+              </div>
+              {error && <p className="text-rose-600 font-bold text-sm text-center bg-rose-50 rounded-xl py-2 px-3">{error}</p>}
+              <button type="submit"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl transition-all active:scale-95 mt-2">
+                ເຂົ້າສູ່ລະບົບ →
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── SLIP BODY (pure component, no hooks) ────────────────────────────────
+    const SlipBody = ({ emp, monthCfg }) => {
+      const dailyRate = emp.base > 0 ? emp.base / emp.workingDays : 0;
+      const BREAK = 40;
+      const stdMins = emp.standardMinsPerDay;
+      const LAO_DAYS = ['ອາ','ຈ','ອ','ພ','ພຫ','ສຸກ','ສ'];
+      const slipHolidayMap = new Map((monthCfg.holidays || []).map(h => typeof h === 'object' ? [Number(h.date), h.name || ''] : [Number(h), '']));
+      // Use the actual year/month from the computed salary data — not monthCfg which may be stale
+      const slipYear = emp.dataYear || monthCfg.year;
+      const slipMonth = emp.dataMonth || monthCfg.month;
+      const slipTotalDays = emp.dataTotalDays || monthCfg.totalDays;
+      const LAO_MONTHS_SLIP = ["ມັງກອນ","ກຸມພາ","ມີນາ","ເມສາ","ພຶດສະພາ","ມິຖຸນາ","ກໍລະກົດ","ສິງຫາ","ກັນຍາ","ຕຸລາ","ພະຈິກ","ທັນວາ"];
+      const slipLabel = `${LAO_MONTHS_SLIP[slipMonth - 1]} ${slipYear}`;
+      let slipSundays = 0;
+      for (let _d = 1; _d <= slipTotalDays; _d++)
+        if (new Date(slipYear, slipMonth - 1, _d).getDay() === 0) slipSundays++;
+      const deductionRows = [];
+      const rawRows = [];
+      for (let d = 1; d <= slipTotalDays; d++) {
+        const date = new Date(slipYear, slipMonth - 1, d);
+        const isSun = date.getDay() === 0;
+        const isHoliday = slipHolidayMap.has(d);
+        const holidayName = slipHolidayMap.get(d) || 'ວັນພັກລາດຊະການ';
+        const log = emp.dailyLog.get(d);
+        rawRows.push({ day: d, dayName: LAO_DAYS[date.getDay()], isSun, isHoliday, holidayName, log });
+        if (isSun || isHoliday) continue;
+        const isAbsent = !log || log.validCount === 0 || log.countAsAbsent;
+        if (isAbsent) {
+          const deduct = Math.round(2 * stdMins * emp.hourlyRate / 60);
+          deductionRows.push({ day: d, reason: 'ຂາດວຽກ (×2)', shortMins: stdMins, deduct });
+        } else {
+          const payMins = emp.scanMode === 2 ? log.netM + BREAK : log.netM;
+          const shortMins = Math.max(0, stdMins - payMins);
+          if (shortMins > 0) {
+            const clusters = log.clusters || [];
+            const firstScan = clusters.length > 0 ? clusters[0][0] : null;
+            const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
+            const lastScan = lastC ? lastC[lastC.length - 1] : null;
+            const parts = [];
+            if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
+            if (lastScan !== null && lastScan < 1110) parts.push('ກັບໄວ');
+            if (emp.scanMode === 4 && parts.length === 0) parts.push('ຊ່ວງພັກຍາວ');
+            const reason = parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ';
+            const deduct = Math.round(shortMins * emp.hourlyRate / 60);
+            deductionRows.push({ day: d, reason, shortMins, deduct });
+          }
+        }
+      }
+
+      return (
+        <div className="bg-white rounded-2xl p-8 shadow-sm" style={{fontFamily:"'Noto Sans Lao Looped', sans-serif"}}>
+                {/* HEADER */}
+                <div className="text-center border-b-2 border-slate-200 pb-6 mb-6">
+                  <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900">Sengchanh Salary Calculator</h1>
+                  <p className="text-slate-500 font-bold text-sm mt-1">ໃບແຈ້ງເງິນເດືອນ / Salary Slip</p>
+                  <p className="text-lg font-black text-blue-700 mt-2">{slipLabel}</p>
+                </div>
+                {/* EMPLOYEE INFO */}
+                <div className="grid grid-cols-2 gap-3 mb-4 bg-slate-50 rounded-xl p-4">
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase">ພະນັກງານ</p>
+                    <p className="font-black text-lg">{emp.name}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase">ລະຫັດ</p>
+                    <p className="font-black text-lg">#{emp.code}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase">ຖານເງິນເດືອນ</p>
+                    <p className="font-black text-blue-700">{fmt(emp.base)} ກີບ</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase">ອັດຕາ / ຕ້ອງມາ</p>
+                    <p className="font-black">{emp.rateDays} <span className="text-slate-400 font-bold text-xs">/ {emp.workingDays} ວັນ</span></p>
+                    <p className="text-[9px] text-slate-400 font-bold">{emp.rateDays} ວັນ = ອັດຕາ, {emp.workingDays} ວັນ = ຕ້ອງມາ (ຫຼັງຫັກພັກ)</p>
+                  </div>
+                </div>
+                {/* MONTH CALENDAR SUMMARY */}
+                {(() => {
+                  const allHolidays = (monthCfg.holidays || [])
+                    .filter(h => { const d = typeof h === 'object' ? Number(h.date) : Number(h); return d >= 1 && d <= slipTotalDays; })
+                    .map(h => {
+                      const obj = typeof h === 'object' ? h : { date: h, name: '' };
+                      const d = Number(obj.date);
+                      const isSun = new Date(slipYear, slipMonth - 1, d).getDay() === 0;
+                      return { ...obj, date: d, isSun };
+                    });
+                  const effectiveCount = allHolidays.length;
+                  const sundayCount = allHolidays.filter(h => h.isSun).length;
+                  return (
+                    <div className="mb-6 rounded-xl border border-slate-200 overflow-hidden">
+                      <div className="bg-slate-800 text-white px-4 py-2 flex justify-between items-center">
+                        <span className="font-black text-xs uppercase tracking-widest">ສະຫຼຸບເດືອນ {slipLabel}</span>
+                        <span className="text-slate-400 text-[10px] font-bold">ອັດຕາ {fmt(emp.base)} ÷ {emp.rateDays} ວັນ = {fmt(Math.round(emp.base / emp.rateDays))} ກີບ/ວັນ</span>
+                      </div>
+                      <div className="grid grid-cols-4 divide-x divide-slate-100 text-center text-xs">
+                        <div className="p-3">
+                          <p className="text-slate-400 font-bold text-[9px] uppercase mb-1">ທັງໝົດ</p>
+                          <p className="font-black text-base text-slate-700">{slipTotalDays}</p>
+                          <p className="text-[9px] text-slate-400">ວັນໃນເດືອນ</p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-slate-400 font-bold text-[9px] uppercase mb-1">ໝົດ ອາທິດ</p>
+                          <p className="font-black text-base text-slate-500">− {slipSundays}</p>
+                          <p className="text-[9px] text-slate-400">ວັນອາທິດ (Auto)</p>
+                        </div>
+                        <div className="p-3 bg-amber-50">
+                          <p className="text-amber-600 font-bold text-[9px] uppercase mb-1">🏖️ ວັນພັກ</p>
+                          <p className="font-black text-base text-amber-600">− {effectiveCount}</p>
+                          <p className="text-[9px] text-amber-500">
+                            {allHolidays.length > 0
+                              ? allHolidays.map(h => h.isSun ? `ວທ${h.date}(ວ/ອ)` : `ວທ${h.date}`).join(', ')
+                              : 'ບໍ່ມີ'}
+                          </p>
+                        </div>
+                        <div className="p-3 bg-blue-50">
+                          <p className="text-blue-600 font-bold text-[9px] uppercase mb-1">ຕ້ອງມາ</p>
+                          <p className="font-black text-base text-blue-700">= {emp.workingDays}</p>
+                          <p className="text-[9px] text-blue-500">ວັນເຮັດວຽກ</p>
+                        </div>
+                      </div>
+                      {allHolidays.length > 0 && (
+                        <div className="bg-amber-50 border-t border-amber-100 px-4 py-2 flex flex-wrap gap-2 items-center">
+                          {allHolidays.map((h, i) => (
+                            <span key={i} className={`text-[9px] font-black px-2 py-0.5 rounded-lg ${h.isSun ? 'bg-slate-200 text-slate-600' : 'bg-amber-200 text-amber-900'}`}>
+                              🏖️ ວທ {h.date}{h.name ? ` — ${h.name}` : ''}{h.isSun ? ' (ຕົກ ວ/ອ)' : ''}
+                            </span>
+                          ))}
+                          {sundayCount > 0
+                            ? <span className="text-[9px] text-slate-500 font-bold ml-auto">ຕົກ ວ/ອ: ຫັກວັນເຮັດວຽກ ແຕ່ບໍ່ໄດ້ຮັບສິດເຄຣດິດຊົ່ວໂມງ</span>
+                            : <span className="text-[9px] text-amber-700 font-bold ml-auto">ວັນພັກ = ໄດ້ຮັບເງິນເດືອນປົກກະຕິ ບໍ່ຖືວ່າຂາດ</span>
+                          }
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+                {/* ATTENDANCE */}
+                <div className="mb-6">
+                  <h3 className="font-black text-sm uppercase tracking-widest text-slate-500 border-b pb-2 mb-3">ການເຂົ້າວຽກ</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+                    <div className="flex justify-between bg-emerald-50 rounded-lg px-3 py-2">
+                      <span className="font-bold text-slate-600">ວັນທີ່ມາ <span className="text-[9px] text-emerald-500">(ມາຕົວຈິງ / ຕ້ອງມາ)</span></span>
+                      <span className="font-black text-emerald-700">{emp.attended} / {emp.workingDays} ວັນ</span>
+                    </div>
+                    <div className="flex justify-between bg-rose-50 rounded-lg px-3 py-2">
+                      <span className="font-bold text-slate-600">ວັນຂາດ <span className="text-[9px] text-rose-400">(ຫັກເງິນ)</span></span>
+                      <span className="font-black text-rose-700">{emp.absent} ວັນ</span>
+                    </div>
+                    <div className="flex justify-between bg-purple-50 rounded-lg px-3 py-2">
+                      <span className="font-bold text-slate-600">OT ທັງໝົດ</span>
+                      <span className="font-black text-purple-700">{fmtHours(emp.otH)}</span>
+                    </div>
+                  </div>
+                  {emp.absentDates.length > 0 && (
+                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-3">
+                      <p className="text-[10px] font-black text-rose-600 uppercase mb-1">ວັນທີ່ຂາດ (ລາຍລະອຽດ)</p>
+                      <p className="text-sm font-bold text-rose-800 leading-relaxed">
+                        {emp.absentDates.map(d => `${d}${getOrdinal(d)}`).join(", ")} — {slipLabel}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {/* WORK HOURS PROGRESS */}
+                {(() => {
+                  const targetMins = emp.rateDays * emp.standardMinsPerDay;
+                  const actualMins = emp.totalPayMins;
+                  const pct = Math.min(100, Math.round(actualMins / targetMins * 100));
+                  const shortMins = Math.max(0, targetMins - actualMins);
+                  const holidayCount = (monthCfg.holidays || []).filter(h => {
+                    const d = typeof h === 'object' ? Number(h.date) : Number(h);
+                    return d >= 1 && d <= slipTotalDays && new Date(slipYear, slipMonth - 1, d).getDay() !== 0;
+                  }).length;
+                  const barColor = pct >= 95 ? 'bg-emerald-500' : pct >= 80 ? 'bg-amber-400' : 'bg-rose-500';
+                  const textColor = pct >= 95 ? 'text-emerald-700' : pct >= 80 ? 'text-amber-700' : 'text-rose-700';
+                  const bgColor = pct >= 95 ? 'bg-emerald-50 border-emerald-200' : pct >= 80 ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200';
+                  return (
+                    <div className={`mb-6 border rounded-xl p-4 ${bgColor}`}>
+                      <h3 className="font-black text-sm uppercase tracking-widest text-slate-500 mb-3">ຊົ່ວໂມງວຽກ / Work Hours</h3>
+                      <div className="flex justify-between text-xs font-black text-slate-500 mb-1">
+                        <span>ເປົ້າໝາຍ: {emp.rateDays} ວັນ × {fmtHours(emp.standardMinsPerDay / 60)} = <span className="text-slate-700">{fmtHours(targetMins / 60)}</span></span>
+                        <span className={`text-base font-black ${textColor}`}>{pct}%</span>
+                      </div>
+                      <div className="w-full bg-slate-200 rounded-full h-4 mb-2 overflow-hidden">
+                        <div className={`h-4 rounded-full transition-all ${barColor}`} style={{width: `${pct}%`}}></div>
+                      </div>
+                      <div className="flex justify-between text-xs font-bold">
+                        <span className={textColor}>ຕົວຈິງ: <span className="font-black">{fmtHours(actualMins / 60)}</span>
+                          {holidayCount > 0 && <span className="text-amber-600 ml-1">(incl. 🏖️ {fmtHours(holidayCount * emp.standardMinsPerDay / 60)} ພັກລາດຊະການ)</span>}
+                        </span>
+                        {shortMins > 0
+                          ? <span className="text-rose-600 font-black">ຫຼຸດ {fmtHours(shortMins / 60)} → ຫັກ {fmt(emp.absentDeduction)} ກີບ</span>
+                          : <span className="text-emerald-600 font-black">✅ ຄົບຊົ່ວໂມງ — ເງິນເດືອນເຕັມ</span>
+                        }
+                      </div>
+                    </div>
+                  );
+                })()}
+                {/* EARNINGS */}
+                <div className="mb-6">
+                  <h3 className="font-black text-sm uppercase tracking-widest text-slate-500 border-b pb-2 mb-3">ລາຍຮັບ</h3>
+                  <div className="space-y-1">
+                    {/* 1. Base salary reference */}
+                    <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                      <div>
+                        <p className="font-black">ຖານເງິນເດືອນ</p>
+                        <p className="text-[10px] text-slate-400 font-bold">
+                          {fmt(emp.base)} ÷ {emp.rateDays} ວັນ ÷ {fmtHours(emp.standardMinsPerDay / 60)} = {fmt(Math.round(emp.hourlyRate))} ກີບ/ຊມ
+                        </p>
+                      </div>
+                      <span className="font-black text-slate-900">{fmt(emp.base)}</span>
+                    </div>
+                    {/* 2. Actual hours pay */}
+                    <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                      <div>
+                        <p className="font-black">ຄ່າແຮງຕົວຈິງ</p>
+                        <p className="text-[10px] text-slate-400 font-bold">
+                          {fmtHours(emp.totalPayMins / 60)} ຊມ × {fmt(Math.round(emp.hourlyRate))} ກີບ/ຊມ
+                        </p>
+                      </div>
+                      <span className="font-black text-slate-900">{fmt(emp.rawWorkPay)}</span>
+                    </div>
+                    {/* 3. Absent penalty (×2 rule extra deduction) */}
+                    {emp.absent > 0 && (
+                      <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                        <div>
+                          <p className="font-black text-rose-600">ຮັບໜ້ອຍກວ່າຖານ</p>
+                          <p className="text-[10px] text-rose-400 font-bold">
+                            {emp.absent} ວັນ × {fmt(emp.dailyRateKip)} ກີບ/ວັນ — ຂາດ 1 ວັນ ຫັກ 2 ວັນ
+                          </p>
+                        </div>
+                        <span className="font-black text-rose-600">−{fmt(emp.absentPenalty)}</span>
+                      </div>
+                    )}
+                    {/* Deduction breakdown table */}
+                    {deductionRows.length > 0 && (
+                      <div className="mt-2 mb-1 bg-rose-50 border border-rose-100 rounded-xl p-3">
+                        <p className="text-[10px] font-black text-rose-600 uppercase mb-2 tracking-widest">ລາຍລະອຽດການຫັກ / Deduction Breakdown</p>
+                        <table className="w-full text-[10px]">
+                          <thead>
+                            <tr className="text-rose-400 font-black border-b border-rose-200">
+                              <th className="text-left py-1 pr-2">ວັນທີ</th>
+                              <th className="text-left py-1 pr-2">ສາເຫດ</th>
+                              <th className="text-right py-1 pr-2">ນາທີຫຼຸດ</th>
+                              <th className="text-right py-1">ຫັກ (ກີບ)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {deductionRows.map(r => (
+                              <tr key={r.day} className="border-b border-rose-100">
+                                <td className="py-1 pr-2 font-bold">{r.day}</td>
+                                <td className="py-1 pr-2 font-bold">{r.reason}</td>
+                                <td className="py-1 pr-2 text-right font-mono">{r.shortMins}ນທ</td>
+                                <td className="py-1 text-right font-mono text-rose-600 font-black">({fmt(r.deduct)})</td>
+                              </tr>
+                            ))}
+                            <tr className="border-t-2 border-rose-300">
+                              <td colSpan={3} className="py-1 font-black text-right pr-2 text-rose-700">ລວມຫັກ</td>
+                              <td className="py-1 text-right font-mono text-rose-700 font-black">({fmt(deductionRows.reduce((a, r) => a + r.deduct, 0))})</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {/* 4. Subtotal before OT / bonus / advance */}
+                    <div className="flex justify-between items-center py-2.5 px-3 my-2 bg-slate-100 rounded-xl border border-slate-200">
+                      <div>
+                        <p className="font-black text-slate-700 text-sm">ຍອດເຫລືອ (ກ່ອນ OT / ໂບນັດ / ຫັກ)</p>
+                        <p className="text-[10px] text-slate-400 font-bold">ຄ່າແຮງຕົວຈິງ{emp.absent > 0 ? ' − ຮັບໜ້ອຍກວ່າຖານ' : ''}</p>
+                      </div>
+                      <span className="font-black text-slate-900 text-base">{fmt(emp.workPay)} ກີບ</span>
+                    </div>
+                    {/* 5. OT Pay */}
+                    {emp.otPay > 0 && (
+                      <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                        <div>
+                          <p className="font-black text-purple-700">ເງິນ OT</p>
+                          <p className="text-[10px] text-slate-400 font-bold">{fmtHours(emp.otH)} × {fmt(monthCfg.otRate)} ກີບ/ຊມ</p>
+                        </div>
+                        <span className="font-black text-purple-700">{fmt(emp.otPay)}</span>
+                      </div>
+                    )}
+                    {/* 6. OT Bonus — only show if employee earned it */}
+                    {emp.otBonus > 0 && (
+                    <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                      <div>
+                        <p className="font-black text-emerald-700">ໂບນັດ OT</p>
+                        <p className="text-[10px] text-emerald-600 font-bold">✅ OT = {fmtHours(emp.otH)}, ຂາດ {emp.absent} ວັນ — ໄດ້ໂບນັດ</p>
+                      </div>
+                      <span className="font-black text-emerald-700">{fmt(emp.otBonus)}</span>
+                    </div>
+                    )}
+                    {/* 7. Special Bonus */}
+                    {(emp.special_bonus || 0) > 0 && (
+                      <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                        <p className="font-black text-purple-700">ໂບນັດພິເສດ</p>
+                        <span className="font-black text-purple-700">{fmt(emp.special_bonus)}</span>
+                      </div>
+                    )}
+                    {/* 8. Add-back hours */}
+                    {(emp.addbackApplied || 0) > 0 && (
+                      <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
+                        <div>
+                          <p className="font-black text-blue-700">ເພີ່ມຊົ່ວໂມງຄືນ</p>
+                          <p className="text-[10px] text-slate-400 font-bold">
+                            {emp.addback_reason ? `${emp.addback_reason} — ` : ''}{fmtHours(emp.addbackApplied / 60)} × {fmt(Math.round(emp.hourlyRate))} ກີບ/ຊມ
+                          </p>
+                        </div>
+                        <span className="font-black text-blue-700">+{fmt(Math.round(emp.addbackApplied * emp.hourlyRate / 60))} ກີບ</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {/* TOTALS */}
+                <div className="bg-slate-50 rounded-xl p-4 mb-4">
+                  <div className="flex justify-between text-sm py-2">
+                    <span className="font-bold text-slate-600">ລວມລາຍຮັບ (Gross)</span>
+                    <span className="font-black text-lg">{fmt(emp.totalGross)} ກີບ</span>
+                  </div>
+                  {(emp.advance || 0) > 0 && (
+                    <div className="flex justify-between text-sm py-2 border-t border-slate-200">
+                      <span className="font-bold text-rose-600">ຫັກເງິນເບີກ</span>
+                      <span className="font-black text-rose-600">({fmt(emp.advance)}) ກີບ</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-black py-3 border-t-2 border-slate-900 mt-1">
+                    <span className="text-slate-900 uppercase tracking-wider text-sm">ເງິນເດືອນສຸດທິ (NET PAY)</span>
+                    <span className={`text-xl ${emp.netPay < 0 ? 'text-rose-600' : 'text-blue-700'}`}>{fmt(emp.netPay)} ກີບ</span>
+                  </div>
+                </div>
+                {/* RAW SCAN DATA */}
+                <div className="mb-4">
+                  <h3 className="font-black text-sm uppercase tracking-widest text-slate-500 border-b pb-2 mb-3">ຂໍ້ມູນດິບການສະແກນ / Raw Scan Data</h3>
+                  <table className="w-full text-[9px] border-collapse">
+                    <thead>
+                      <tr className="bg-slate-800 text-white font-black">
+                        <th className="px-2 py-1.5 text-left">ວັນທີ</th>
+                        <th className="px-2 py-1.5 text-left">ມື້</th>
+                        {emp.scanMode === 2 ? (<>
+                          <th className="px-2 py-1.5 text-center">ເຂົ້າ</th>
+                          <th className="px-2 py-1.5 text-center">ອອກ</th>
+                        </>) : (<>
+                          <th className="px-2 py-1.5 text-center">ເຂົ້າAM</th>
+                          <th className="px-2 py-1.5 text-center">ອອກAM</th>
+                          <th className="px-2 py-1.5 text-center">ເຂົ້າPM</th>
+                          <th className="px-2 py-1.5 text-center">ອອກPM</th>
+                        </>)}
+                        <th className="px-2 py-1.5 text-right">ສຸດທິ</th>
+                        <th className="px-2 py-1.5 text-left">ໝາຍເຫດ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rawRows.map(({ day, dayName, isSun, isHoliday, holidayName, log }) => {
+                        const clusters = log?.clusters || [];
+                        const isAbsent = !isHoliday && (!log || log.validCount === 0 || log.countAsAbsent);
+                        const rowBg = isHoliday ? 'bg-amber-100' : isSun ? 'bg-amber-50' : isAbsent ? 'bg-rose-50' : day % 2 === 0 ? 'bg-slate-50' : 'bg-white';
+                        const skip = isSun || isHoliday;
+                        return (
+                          <tr key={day} className={`border-b border-slate-100 ${rowBg}`}>
+                            <td className="px-2 py-1 font-bold">{day}</td>
+                            <td className={`px-2 py-1 font-bold ${isHoliday ? 'text-amber-700' : isSun ? 'text-amber-500' : ''}`}>{dayName}{isHoliday && isSun ? ' 🏖️' : ''}</td>
+                            {emp.scanMode === 2 ? (<>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length > 1 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
+                            </>) : (<>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[1] ? formatMinsToClock(clusters[1][clusters[1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length >= 3 ? formatMinsToClock(clusters[clusters.length-2][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length >= 2 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
+                            </>)}
+                            <td className="px-2 py-1 text-right font-mono font-black">
+                              {isHoliday ? <span className="text-amber-600">🏖️</span> : isSun ? <span className="text-amber-500">ອາທິດ</span> : isAbsent ? <span className="text-rose-500">ຂາດ</span> : fmtHours(minsToH(log.netM))}
+                            </td>
+                            <td className="px-2 py-1 text-[8px]">
+                              {isHoliday ? <span className="text-amber-700 font-black not-italic">{holidayName}</span> : <span className="text-slate-400 italic">{log?.warning || ''}</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* FOOTER */}
+                <div className="text-center text-[10px] text-slate-400 font-bold pt-4 border-t border-slate-100">
+                  <p>Sengchanh Salary Calculator — {monthCfg.label}</p>
+                  <p>Generated: {new Date().toLocaleDateString()}</p>
+                </div>
+        </div>
+      );
+    };
+
+    // ─── PDF HELPER ───────────────────────────────────────────────────────────
+    const canvasToSlipPDF = (canvas) => {
+      const { jsPDF } = window.jspdf;
+      const JPEG_QUALITY = 0.85;
+      const margin = 10;
+      const pageW = 210; // A4 width in mm
+      const imgW = pageW - margin * 2;
+      const imgH = (canvas.height * imgW) / canvas.width;
+      const pageH = imgH + margin * 2; // page height = content height, no cuts
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: [pageW, pageH] });
+      pdf.addImage(canvas.toDataURL("image/jpeg", JPEG_QUALITY), "JPEG", margin, margin, imgW, imgH);
+      return pdf;
+    };
+
+    // ─── SLIP MODAL ───────────────────────────────────────────────────────────
+    const SlipModal = ({ emp, monthCfg, onClose }) => {
+      const slipRef = useRef();
+      const [generating, setGenerating] = useState(false);
+
+      const generatePDF = async () => {
+        setGenerating(true);
+        try {
+          const canvas = await html2canvas(slipRef.current, { scale: 1.5, useCORS: true, backgroundColor: "#ffffff" });
+          canvasToSlipPDF(canvas).save(`salary-slip-${emp.name}-${monthCfg.label}.pdf`);
+        } catch (e) {
+          alert("PDF generation failed: " + e.message);
+        }
+        setGenerating(false);
+      };
+
+      return (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/90 backdrop-blur-sm animate-in">
+          <div className="bg-white w-full max-w-2xl max-h-[95vh] rounded-[32px] shadow-2xl overflow-hidden flex flex-col">
+            <div className="p-5 bg-slate-900 text-white flex justify-between items-center flex-shrink-0">
+              <h2 className="font-black text-lg uppercase tracking-widest">Salary Slip — {emp.name}</h2>
+              <div className="flex gap-2">
+                <button onClick={generatePDF} disabled={generating}
+                  className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-xl text-sm font-black flex items-center gap-2 disabled:opacity-50 transition-all active:scale-95">
+                  {generating ? "⏳ Generating..." : "⬇️ Download PDF"}
+                </button>
+                <button onClick={onClose} className="bg-white/10 hover:bg-white/20 w-10 h-10 rounded-xl flex items-center justify-center font-black transition-all">✕</button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 bg-slate-100">
+              <div ref={slipRef}>
+                <SlipBody emp={emp} monthCfg={monthCfg} />
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── USER ROW (inline password change) ───────────────────────────────────
+    const UserRow = ({ u, currentUser, onDelete, onChangePassword }) => {
+      const [editing, setEditing] = useState(false);
+      const [newPw, setNewPw] = useState('');
+      const isSelf = u.username === currentUser;
+      return (
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl border ${isSelf ? 'bg-indigo-50 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
+          <span className="text-lg">{u.role === 'admin' ? '👑' : '👤'}</span>
+          <div className="flex-1 min-w-0">
+            <p className="font-black text-sm text-slate-800">{u.username} {isSelf && <span className="text-indigo-500 text-[10px] font-bold">(you)</span>}</p>
+            <p className="text-[10px] text-slate-400 font-bold uppercase">{u.role}</p>
+          </div>
+          {editing ? (
+            <div className="flex items-center gap-2">
+              <input type="text" value={newPw} onChange={e => setNewPw(e.target.value)}
+                className="p-1.5 border-2 rounded-lg font-bold text-sm focus:border-indigo-400 outline-none w-32"
+                placeholder="new password" autoFocus />
+              <button onClick={() => { onChangePassword(u.username, newPw); setEditing(false); setNewPw(''); }}
+                className="bg-emerald-600 text-white text-[10px] font-black px-3 py-1.5 rounded-lg transition-all active:scale-95">Save</button>
+              <button onClick={() => { setEditing(false); setNewPw(''); }}
+                className="text-slate-400 hover:text-slate-600 font-black text-lg leading-none">×</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEditing(true)}
+                className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-[10px] font-black px-3 py-1.5 rounded-lg transition-all active:scale-95">
+                🔑 Password
+              </button>
+              {!isSelf && (
+                <button onClick={() => onDelete(u.username)}
+                  className="bg-rose-100 hover:bg-rose-200 text-rose-600 text-[10px] font-black px-3 py-1.5 rounded-lg transition-all active:scale-95">
+                  🗑️
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ─── MAIN APP ─────────────────────────────────────────────────────────────
+    function App() {
+      const [authSession, setAuthSessionState] = useState(getAuthSession);
+      const [authUsers, setAuthUsers] = useState(getAuthUsers);
+      const [newUserForm, setNewUserForm] = useState({ username: '', password: '', role: 'user' });
+      const [userMsg, setUserMsg] = useState('');
+
+      const [tab, setTab] = useState("upload");
+      const [employees, setEmployees] = useState(loadEmployees);
+      const [monthCfg, setMonthCfg] = useState(loadMonthCfg);
+      const [results, setResults] = useState(null);
+      const [status, setStatus] = useState("");
+      const [editCode, setEditCode] = useState(null);
+      const [selectedEmp, setSelectedEmp] = useState(null);
+      const [slipEmp, setSlipEmp] = useState(null);
+      const [showConfirm, setShowConfirm] = useState(null);
+      const [sessions, setSessions] = useState(loadSessions);
+      const [showSaveSession, setShowSaveSession] = useState(false);
+      const [sessionName, setSessionName] = useState("");
+      const fileRef = useRef();
+      const combinedDataRef = useRef(null);
+
+      const [lastSaved, setLastSaved] = useState(null);
+      const markSaved = () => setLastSaved(new Date().toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      const [bulkGenerating, setBulkGenerating] = useState(false);
+      const [bulkProgress, setBulkProgress] = useState(0);
+      const [showNewMonth, setShowNewMonth] = useState(false);
+      const [newMonthDraft, setNewMonthDraft] = useState(null);
+
+      useEffect(() => { saveEmployees(employees); markSaved(); }, [employees]);
+      useEffect(() => { saveMonthCfg(monthCfg); markSaved(); }, [monthCfg]);
+
+      // Restore scan data on first load
+      useEffect(() => {
+        const data = loadCurrentScanData();
+        if (!data) return;
+        combinedDataRef.current = data;
+        const emps = loadEmployees();
+        const cfg = loadMonthCfg();
+        const res = {};
+        emps.forEach(emp => {
+          const empData = data[emp.code] || [];
+          if (empData.some(row => row.scans.some(s => s !== null)))
+            res[emp.code] = computeSalary(emp, empData, cfg);
+        });
+        if (Object.keys(res).length > 0) {
+          setResults(res);
+          setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ");
+        }
+      }, []);
+
+      // Recompute results in real-time whenever employees or monthCfg changes
+      useEffect(() => {
+        if (!combinedDataRef.current) return;
+        const res = {};
+        employees.forEach(emp => {
+          const data = combinedDataRef.current[emp.code] || [];
+          const hasValidScans = data.some(row => row.scans.some(s => s !== null));
+          if (hasValidScans) res[emp.code] = computeSalary(emp, data, monthCfg);
+        });
+        setResults(res);
+      }, [employees, monthCfg]);
+
+      // Keep open modals in sync when results recompute
+      useEffect(() => {
+        if (!results) return;
+        if (selectedEmp && results[selectedEmp.code]) setSelectedEmp(results[selectedEmp.code]);
+        if (slipEmp && results[slipEmp.code]) setSlipEmp(results[slipEmp.code]);
+      }, [results]);
+
+      const processFiles = useCallback(async (files) => {
+        if (!files.length) return;
+        setStatus("ກຳລັງປະມວນຜົນ...");
+        const combinedData = {};
+        employees.forEach(e => combinedData[e.code] = []);
+        // track employees discovered in CSV but not in our list
+        const discoveredEmps = {};
+        for (const file of files) {
+          const text = await file.text();
+          const result = window.Papa.parse(text, { header: false, skipEmptyLines: true });
+          result.data.slice(1).forEach(r => {
+            if (r.length < 6) return;
+            const code = r[0].toString().trim().replace(/^\uFEFF/, "");
+            if (!code) return;
+            // auto-discover new employees found in CSV
+            if (combinedData[code] === undefined) {
+              combinedData[code] = [];
+              if (!discoveredEmps[code]) {
+                const name = r[1]?.toString().trim() || r[2]?.toString().trim() || `EMP-${code}`;
+                discoveredEmps[code] = { code, name, scan: 4, base: 0, special_bonus: 0, advance: 0 };
+              }
+            }
+            const dateStr = r[4]?.toString().trim();
+            if (!dateStr) return;
+            const scans = Array.from({ length: 5 }, (_, j) => parseTime(r[5 + j]?.toString() || ""));
+            if (!combinedData[code].some(row => row.dateStr === dateStr))
+              combinedData[code].push({ dateStr, scans });
+          });
+        }
+        // Auto-detect scan mode for newly discovered employees
+        Object.values(discoveredEmps).forEach(emp => {
+          emp.scan = detectScanMode(combinedData[emp.code] || []);
+        });
+        const allEmps = [...employees, ...Object.values(discoveredEmps)];
+
+        // Auto-detect month/year from the first valid date in the CSV
+        let detectedCfg = monthCfg;
+        const allDateStrs = Object.values(combinedData).flat().map(r => r.dateStr).filter(Boolean);
+        if (allDateStrs.length > 0) {
+          const sample = allDateStrs[0];
+          const parts = sample.split(sample.includes('-') ? '-' : '/');
+          if (parts.length === 3) {
+            let csvMonth, csvYear;
+            if (sample.includes('-')) { csvYear = Number(parts[0]); csvMonth = Number(parts[1]); }
+            else                       { csvYear = Number(parts[2]); csvMonth = Number(parts[1]); }
+            if (csvMonth >= 1 && csvMonth <= 12 && csvYear >= 2020) {
+              const csvTotalDays = new Date(csvYear, csvMonth, 0).getDate();
+              const laoLabel = `${LAO_MONTHS[csvMonth - 1]} ${csvYear}`;
+              detectedCfg = { ...monthCfg, month: csvMonth, year: csvYear, totalDays: csvTotalDays, label: laoLabel };
+              setMonthCfg(detectedCfg);
+            }
+          }
+        }
+
+        // Store raw scan data so results can be recomputed when settings change
+        combinedDataRef.current = combinedData;
+        saveCurrentScanData(combinedData);
+        const res = {};
+        allEmps.forEach(emp => {
+          const data = combinedData[emp.code] || [];
+          const hasValidScans = data.some(row => row.scans.some(s => s !== null));
+          if (hasValidScans) res[emp.code] = computeSalary(emp, data, detectedCfg);
+        });
+        setResults(res);
+        // Merge newly discovered employees into state so they appear in Settings
+        const newlyFound = Object.values(discoveredEmps);
+        if (newlyFound.length > 0) {
+          setEmployees(prev => {
+            const existingCodes = new Set(prev.map(e => e.code));
+            const toAdd = newlyFound.filter(e => !existingCodes.has(e.code));
+            return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+          });
+        }
+        setStatus(`✅ ຄຳນວນສຳເລັດ ${Object.keys(res).length} ຄົນ`);
+        setTab("results");
+      }, [employees, monthCfg]);
+
+      const saveCurrentSession = () => {
+        if (!combinedDataRef.current) return;
+        const label = sessionName.trim() || monthCfg.label;
+        const newSession = {
+          id: Date.now(),
+          label,
+          monthCfg,
+          scanData: combinedDataRef.current,
+          employees,
+          employeeCount: Object.keys(combinedDataRef.current).filter(code =>
+            (combinedDataRef.current[code] || []).some(r => r.scans.some(s => s !== null))
+          ).length,
+          savedAt: new Date().toLocaleString("lo-LA", { dateStyle: "medium", timeStyle: "short" }),
+        };
+        const updated = [newSession, ...sessions];
+        setSessions(updated);
+        saveSessions(updated);
+        setShowSaveSession(false);
+        setSessionName("");
+      };
+
+      const exportSessions = () => {
+        const blob = new Blob([JSON.stringify(sessions, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `ssc-sessions-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const importSessions = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const imported = JSON.parse(ev.target.result);
+            if (!Array.isArray(imported)) throw new Error("Invalid format");
+            const existingIds = new Set(sessions.map(s => s.id));
+            const toAdd = imported.filter(s => s.id && s.label && !existingIds.has(s.id));
+            const merged = [...toAdd, ...sessions];
+            setSessions(merged);
+            saveSessions(merged);
+            setStatus(`✅ Import ສຳເລັດ — ເພີ່ມ ${toAdd.length} session`);
+          } catch {
+            setStatus("❌ ໄຟລ໌ JSON ບໍ່ຖືກຕ້ອງ");
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = "";
+      };
+
+      const loadSession = (session) => {
+        setMonthCfg(session.monthCfg);
+        setEmployees(session.employees);
+        combinedDataRef.current = session.scanData;
+        saveCurrentScanData(session.scanData);
+        const res = {};
+        session.employees.forEach(emp => {
+          const data = session.scanData[emp.code] || [];
+          if (data.some(row => row.scans.some(s => s !== null)))
+            res[emp.code] = computeSalary(emp, data, session.monthCfg);
+        });
+        setResults(res);
+        setStatus(`✅ ໂຫລດ "${session.label}" ສຳເລັດ — ${session.employeeCount} ຄົນ`);
+        setTab("results");
+      };
+
+      const deleteSession = (id) => {
+        const updated = sessions.filter(s => s.id !== id);
+        setSessions(updated);
+        saveSessions(updated);
+      };
+
+      const clearCurrentWork = () => {
+        combinedDataRef.current = null;
+        localStorage.removeItem("ssc_currentScanData");
+        setResults(null);
+        setStatus("");
+        setTab("upload");
+      };
+
+      const LAO_MONTHS = ["ມັງກອນ","ກຸມພາ","ມີນາ","ເມສາ","ພຶດສະພາ","ມິຖຸນາ","ກໍລະກົດ","ສິງຫາ","ກັນຍາ","ຕຸລາ","ພະຈິກ","ທັນວາ"];
+
+      const nextMonthCfg = () => {
+        const m = monthCfg.month === 12 ? 1 : monthCfg.month + 1;
+        const y = monthCfg.month === 12 ? monthCfg.year + 1 : monthCfg.year;
+        return { ...monthCfg, month: m, year: y, label: `${LAO_MONTHS[m - 1]} ${y}`, totalDays: new Date(y, m, 0).getDate(), holidays: [] };
+      };
+
+      const openNewMonth = () => {
+        setNewMonthDraft(nextMonthCfg());
+        setShowNewMonth(true);
+      };
+
+      const startNewMonth = () => {
+        setMonthCfg(newMonthDraft);
+        setEmployees(prev => prev.map(e => ({ ...e, advance: 0, special_bonus: 0 })));
+        combinedDataRef.current = null;
+        localStorage.removeItem("ssc_currentScanData");
+        setResults(null);
+        setStatus(`✅ ພ້ອມສຳລັບ ${newMonthDraft.label} — ອັບໂຫລດ CSV ໄດ້ເລີຍ`);
+        setShowNewMonth(false);
+        setNewMonthDraft(null);
+        setTab("upload");
+      };
+
+      const updateDraftMonth = (field, val) => {
+        setNewMonthDraft(prev => {
+          const next = { ...prev, [field]: val };
+          if (field === 'month' || field === 'year') {
+            const m = field === 'month' ? Number(val) : prev.month;
+            const y = field === 'year'  ? Number(val) : prev.year;
+            if (m >= 1 && m <= 12 && y >= 2020) {
+              next.totalDays = new Date(y, m, 0).getDate();
+              next.label = `${LAO_MONTHS[m - 1]} ${y}`;
+            }
+          }
+          return next;
+        });
+      };
+
+      const computedSundays = (() => { let s = 0; for (let d = 1; d <= monthCfg.totalDays; d++) if (new Date(monthCfg.year, monthCfg.month - 1, d).getDay() === 0) s++; return s; })();
+      const sundayDates = (() => { const a = []; for (let d = 1; d <= monthCfg.totalDays; d++) if (new Date(monthCfg.year, monthCfg.month - 1, d).getDay() === 0) a.push(d); return a; })();
+      const rateDays = monthCfg.totalDays - computedSundays;
+      const workingDays = rateDays - (monthCfg.holidays || []).filter(h => { const d = typeof h === 'object' ? Number(h.date) : Number(h); return d >= 1 && d <= monthCfg.totalDays; }).length;
+      const orderedResults = results ? Object.entries(results).sort((a, b) => parseInt(a[0]) - parseInt(b[0])) : [];
+      const totals = orderedResults.reduce((acc, [, r]) => ({
+        totalGross: acc.totalGross + r.totalGross,
+        advance: acc.advance + (r.advance || 0),
+        netPay: acc.netPay + r.netPay,
+        workPay: acc.workPay + r.workPay,
+        otPay: acc.otPay + r.otPay,
+        specialBonus: acc.specialBonus + (r.special_bonus || 0),
+        otBonus: acc.otBonus + r.otBonus,
+      }), { totalGross:0, advance:0, netPay:0, workPay:0, otPay:0, specialBonus:0, otBonus:0 });
+
+      const resetAllAdvances = () => { setEmployees(employees.map(e => ({ ...e, advance: 0 }))); setShowConfirm(null); };
+      const resetAllSpecialBonuses = () => { setEmployees(employees.map(e => ({ ...e, special_bonus: 0 }))); setShowConfirm(null); };
+
+      const generateBulkPDF = async () => {
+        setBulkGenerating(true);
+        setBulkProgress(0);
+        const zip = new window.JSZip();
+        const list = orderedResults;
+        for (let i = 0; i < list.length; i++) {
+          const [, r] = list[i];
+          setBulkProgress(i + 1);
+          const container = document.createElement('div');
+          container.style.cssText = 'position:fixed;left:-99999px;top:0;width:794px;background:white;';
+          document.body.appendChild(container);
+          const root = ReactDOM.createRoot(container);
+          await new Promise(resolve => {
+            root.render(React.createElement(SlipBody, { emp: r, monthCfg }));
+            setTimeout(resolve, 400);
+          });
+          try {
+            const canvas = await html2canvas(container.firstChild, { scale: 1.5, useCORS: true, backgroundColor: '#ffffff' });
+            const pdf = canvasToSlipPDF(canvas);
+            zip.file(`${String(r.code).padStart(2,'0')}_${r.name}_${monthCfg.label}.pdf`, pdf.output('blob'));
+          } catch(e) { console.error(r.name, e); }
+          root.unmount();
+          document.body.removeChild(container);
+        }
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `salary-slips-${monthCfg.label}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setBulkGenerating(false);
+        setBulkProgress(0);
+      };
+
+      // ── Auth helpers (after all hooks) ──────────────────────────────────────
+      const logout = () => { clearAuthSession(); setAuthSessionState(null); };
+      const addUser = () => {
+        const u = newUserForm.username.trim();
+        const p = newUserForm.password.trim();
+        if (!u || !p) { setUserMsg('ກະລຸນາໃສ່ຊື່ ແລະ ລະຫັດ'); return; }
+        if (authUsers.find(x => x.username === u)) { setUserMsg('ຊື່ຜູ້ໃຊ້ນີ້ມີຢູ່ແລ້ວ'); return; }
+        const updated = [...authUsers, { username: u, password: p, role: newUserForm.role }];
+        setAuthUsers(updated); saveAuthUsers(updated);
+        setNewUserForm({ username: '', password: '', role: 'user' });
+        setUserMsg(`✅ ເພີ່ມ "${u}" ສຳເລັດ`);
+      };
+      const deleteUser = (username) => {
+        if (username === authSession?.username) { setUserMsg('ບໍ່ສາມາດລຶບຕົນເອງ'); return; }
+        const updated = authUsers.filter(x => x.username !== username);
+        setAuthUsers(updated); saveAuthUsers(updated);
+        setUserMsg(`🗑️ ລຶບ "${username}" ແລ້ວ`);
+      };
+      const changePassword = (username, newPw) => {
+        if (!newPw.trim()) return;
+        const updated = authUsers.map(x => x.username === username ? { ...x, password: newPw.trim() } : x);
+        setAuthUsers(updated); saveAuthUsers(updated);
+        setUserMsg(`✅ ປ່ຽນລະຫັດ "${username}" ແລ້ວ`);
+      };
+
+      if (!authSession) return <LoginScreen onLogin={(user) => setAuthSessionState(user)} />;
+
+      return (
+        <div className="min-h-screen bg-slate-50 text-slate-900 pb-20">
+          {/* HEADER */}
+          <header className="bg-gradient-to-r from-blue-900 to-indigo-900 p-8 text-white shadow-xl">
+            <div className="max-w-7xl mx-auto flex items-center justify-between">
+              <div className="flex items-center gap-5">
+                <div className="bg-white/10 p-4 rounded-2xl text-4xl shadow-inner">🏦</div>
+                <div>
+                  <h1 className="text-3xl font-black tracking-tighter uppercase">Sengchanh Salary Calculator</h1>
+                  <p className="text-blue-200 text-sm font-bold opacity-80 uppercase tracking-widest">Stable v3.8 — Detailed Bonus View</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-6">
+                <div className="text-right">
+                  <p className="text-xs font-bold text-blue-300 uppercase">ເດືອນປະຈຸບັນ</p>
+                  <p className="text-xl font-black">{monthCfg.label}</p>
+                  {lastSaved && (
+                    <p className="text-[10px] text-emerald-400 font-bold mt-1">✓ Auto-saved {lastSaved}</p>
+                  )}
+                </div>
+                <div className="flex flex-col items-end gap-1.5">
+                  <div className="flex items-center gap-2 bg-white/10 rounded-xl px-3 py-1.5">
+                    <span className="text-lg">{authSession.role === 'admin' ? '👑' : '👤'}</span>
+                    <span className="text-sm font-black text-white">{authSession.username}</span>
+                  </div>
+                  <button onClick={logout}
+                    className="text-[10px] font-black text-blue-300 hover:text-white uppercase tracking-widest transition-colors">
+                    ອອກຈາກລະບົບ / Logout
+                  </button>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* NAV */}
+          <nav className="bg-white border-b sticky top-0 z-30 shadow-md">
+            <div className="max-w-7xl mx-auto flex">
+              {[
+                { key: "upload",   label: "📤 ອັບໂຫລດ" },
+                { key: "settings", label: "⚙️ ຕັ້ງຄ່າ" },
+                { key: "results",  label: "📑 ບົດສະຫຼຸບ" },
+              ].map(({ key, label }) => (
+                <button key={key} onClick={() => setTab(key)}
+                  className={`px-8 py-5 text-sm font-bold border-b-4 transition-all flex items-center gap-2 ${tab === key ? "bg-blue-50 text-blue-700 border-blue-700" : "text-slate-500 border-transparent hover:bg-slate-50"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          <main className="max-w-7xl mx-auto p-6 lg:p-10">
+
+            {/* ── UPLOAD TAB ─────────────────────────────────────────────── */}
+            {tab === "upload" && (
+              <div className="max-w-3xl mx-auto py-10 space-y-8">
+
+                {/* Upload area */}
+                <div onClick={() => fileRef.current.click()}
+                  className="border-4 border-dashed rounded-[40px] p-16 bg-white cursor-pointer hover:border-blue-400 transition-all shadow-inner text-center">
+                  <div className="text-7xl mb-4 opacity-30">📥</div>
+                  <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tighter">Choose File (CSV)</h3>
+                  <p className="text-slate-400 font-bold mb-2 italic">ລາກໄຟລ໌ CSV ຈາກເຄື່ອງສະແກນບັດ</p>
+                  <input ref={fileRef} type="file" multiple className="hidden" onChange={e => processFiles(Array.from(e.target.files))} />
+                </div>
+                {status && <div className="p-4 bg-emerald-50 text-emerald-800 rounded-2xl font-bold border-2 border-emerald-200 text-center">{status}</div>}
+
+                {/* Start New Month */}
+                <button onClick={openNewMonth}
+                  className="w-full py-4 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-3 text-sm uppercase tracking-widest">
+                  <span className="text-xl">📅</span>
+                  ເລີ່ມເດືອນໃໝ່ / ເຮັດໃໝ່
+                </button>
+
+                {/* Current work bar */}
+                {combinedDataRef.current && (
+                  <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl px-6 py-4 flex items-center justify-between gap-4">
+                    <div>
+                      <p className="font-black text-blue-800 text-sm">💾 ມີຂໍ້ມູນໃນ Session ປະຈຸບັນ</p>
+                      <p className="text-blue-500 text-xs font-bold mt-0.5">{monthCfg.label} — {results ? Object.keys(results).length : 0} ຄົນ</p>
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <button onClick={() => setShowSaveSession(true)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-black px-4 py-2 rounded-xl shadow transition-all active:scale-95">
+                        💾 Save Session
+                      </button>
+                      <button onClick={() => setTab("results")}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black px-4 py-2 rounded-xl shadow transition-all active:scale-95">
+                        📑 ເບິ່ງ Report
+                      </button>
+                      <button onClick={() => setShowConfirm("clearWork")}
+                        className="bg-rose-100 hover:bg-rose-200 text-rose-600 text-xs font-black px-4 py-2 rounded-xl transition-all active:scale-95">
+                        🗑 Clear
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Saved sessions */}
+                <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
+                  <div className="bg-slate-900 px-6 py-4 text-white flex items-center justify-between">
+                    <span className="font-black uppercase tracking-widest text-xs">📂 Saved Sessions</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-400 text-xs font-bold">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>
+                      {sessions.length > 0 && (
+                        <button onClick={exportSessions}
+                          className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-black px-3 py-1.5 rounded-lg transition-all active:scale-95">
+                          ⬇ Export
+                        </button>
+                      )}
+                      <label className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-black px-3 py-1.5 rounded-lg transition-all active:scale-95 cursor-pointer">
+                        ⬆ Import
+                        <input type="file" accept=".json" className="hidden" onChange={importSessions} />
+                      </label>
+                    </div>
+                  </div>
+                  {sessions.length === 0 ? (
+                    <div className="p-10 text-center text-slate-400 font-bold text-sm">
+                      ຍັງບໍ່ມີ session ທີ່ save ໄວ້ — ອັບໂຫລດ CSV ແລ້ວກົດ "Save Session"
+                    </div>
+                  ) : (
+                    <div className="divide-y">
+                      {sessions.map(s => (
+                        <div key={s.id} className="px-6 py-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                          <div>
+                            <p className="font-black text-slate-800">{s.label}</p>
+                            <p className="text-xs text-slate-400 font-bold mt-0.5">{s.employeeCount} ຄົນ · Saved {s.savedAt}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => loadSession(s)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-black px-4 py-2 rounded-xl shadow transition-all active:scale-95">
+                              ▶ Load
+                            </button>
+                            <button onClick={() => setShowConfirm({ type: "deleteSession", id: s.id, label: s.label })}
+                              className="bg-rose-100 hover:bg-rose-200 text-rose-600 text-xs font-black px-3 py-2 rounded-xl transition-all active:scale-95">
+                              🗑
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
+
+            {/* ── SETTINGS TAB ────────────────────────────────────────────── */}
+            {tab === "settings" && (
+              <div className="space-y-8 animate-in">
+                <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
+                  <div className="bg-slate-900 p-5 text-white font-black uppercase tracking-widest text-xs">⚙️ General Settings</div>
+                  <div className="p-8 grid grid-cols-1 md:grid-cols-4 gap-6">
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ຊື່ເດືອນ</label>
+                      <input className="w-full p-3 border rounded-xl font-bold" value={monthCfg.label} onChange={e => setMonthCfg({ ...monthCfg, label: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ວັນທັງໝົດ</label>
+                      <NumericInput className="w-full p-3 border rounded-xl font-bold" value={monthCfg.totalDays} onChange={val => setMonthCfg({ ...monthCfg, totalDays: val })} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ວັນອາທິດ (Auto)</label>
+                      <div className="p-3 bg-slate-50 border rounded-xl font-black text-slate-700">
+                        {computedSundays} ວັນ
+                        <p className="text-[10px] text-slate-400 font-bold mt-0.5">ວທ {sundayDates.join(', ')}</p>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ວັນເຮັດວຽກ (ອັດຕາ / ຕ້ອງມາ)</label>
+                      <div className="p-3 bg-blue-50 text-blue-700 rounded-xl font-black text-lg">{rateDays} / {workingDays} ວັນ</div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ປີ</label>
+                      <NumericInput className="w-full p-3 border rounded-xl font-bold" value={monthCfg.year} onChange={val => setMonthCfg({ ...monthCfg, year: val })} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ເດືອນ (1-12)</label>
+                      <NumericInput className="w-full p-3 border rounded-xl font-bold" value={monthCfg.month} onChange={val => setMonthCfg({ ...monthCfg, month: val })} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">ອັດຕາ OT (ກີບ/ຊມ)</label>
+                      <NumericInput className="w-full p-3 border rounded-xl font-bold" value={monthCfg.otRate} onChange={val => setMonthCfg({ ...monthCfg, otRate: val })} />
+                    </div>
+                    <div className="md:col-span-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">🏖️ ວັນພັກລາດຊະການ</label>
+                        <button
+                          onClick={() => setMonthCfg({ ...monthCfg, holidays: [...(monthCfg.holidays || []), { date: '', name: '' }] })}
+                          className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black px-3 py-1.5 rounded-lg shadow transition-all active:scale-95">
+                          + ເພີ່ມວັນພັກ
+                        </button>
+                      </div>
+                      {(monthCfg.holidays || []).length === 0 ? (
+                        <p className="text-[11px] text-slate-400 font-bold py-3">ຍັງບໍ່ມີວັນພັກ — ກົດ "+ ເພີ່ມວັນພັກ" ເພື່ອເພີ່ມ</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {(monthCfg.holidays || []).map((h, i) => {
+                            const hObj = typeof h === 'object' ? h : { date: h, name: '' };
+                            const updateHoliday = (field, val) => {
+                              const updated = (monthCfg.holidays || []).map((x, xi) => xi === i ? { ...(typeof x === 'object' ? x : { date: x, name: '' }), [field]: val } : x);
+                              setMonthCfg({ ...monthCfg, holidays: updated });
+                            };
+                            const removeHoliday = () => setMonthCfg({ ...monthCfg, holidays: (monthCfg.holidays || []).filter((_, xi) => xi !== i) });
+                            return (
+                              <div key={i} className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2">
+                                <span className="text-amber-600 font-black text-[10px] uppercase whitespace-nowrap">ວທ</span>
+                                <input
+                                  type="number" min="1" max="31"
+                                  className="w-14 p-1.5 border-2 border-amber-200 rounded-lg font-black text-center text-sm focus:outline-none focus:border-amber-400 bg-white"
+                                  placeholder="8"
+                                  value={hObj.date}
+                                  onChange={e => updateHoliday('date', parseInt(e.target.value) || '')}
+                                />
+                                <input
+                                  type="text"
+                                  className="flex-1 p-1.5 border-2 border-amber-200 rounded-lg font-bold text-sm focus:outline-none focus:border-amber-400 bg-white"
+                                  placeholder="ຊື່ວັນພັກ (ຕ.ຢ. ວັນສະຕີສາກົນ)"
+                                  value={hObj.name}
+                                  onChange={e => updateHoliday('name', e.target.value)}
+                                />
+                                <button onClick={removeHoliday} className="text-rose-400 hover:text-rose-600 font-black text-lg leading-none transition-colors">×</button>
+                              </div>
+                            );
+                          })}
+                          <p className="text-[10px] text-amber-700 font-bold mt-1">
+                            ✅ ວັນພັກ {(monthCfg.holidays || []).length} ວັນ — ວັນເຮັດວຽກຕົວຈິງ: {monthCfg.totalDays} − {computedSundays} ອາທິດ − {(monthCfg.holidays || []).length} ພັກ = {workingDays} ວັນ
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* USER MANAGEMENT — admin only */}
+                {authSession.role === 'admin' && (
+                  <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
+                    <div className="bg-indigo-900 p-5 text-white font-black uppercase tracking-widest text-xs flex items-center gap-2">
+                      👥 User Management
+                      <span className="ml-auto text-indigo-300 normal-case font-bold text-[10px]">Admin Only</span>
+                    </div>
+                    <div className="p-6 space-y-5">
+                      {userMsg && (
+                        <div className={`text-sm font-bold px-4 py-2 rounded-xl ${userMsg.startsWith('✅') ? 'bg-emerald-50 text-emerald-700' : userMsg.startsWith('🗑') ? 'bg-slate-100 text-slate-600' : 'bg-rose-50 text-rose-700'}`}>
+                          {userMsg}
+                        </div>
+                      )}
+                      {/* Existing users */}
+                      <div className="space-y-2">
+                        {authUsers.map(u => (
+                          <UserRow key={u.username} u={u} currentUser={authSession.username}
+                            onDelete={deleteUser} onChangePassword={changePassword} />
+                        ))}
+                      </div>
+                      {/* Add new user */}
+                      <div className="border-t pt-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">+ ເພີ່ມຜູ້ໃຊ້ໃໝ່ / Add User</p>
+                        <div className="flex flex-wrap gap-3 items-end">
+                          <div className="flex-1 min-w-[140px]">
+                            <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">Username</label>
+                            <input type="text" value={newUserForm.username}
+                              onChange={e => { setNewUserForm(f => ({ ...f, username: e.target.value })); setUserMsg(''); }}
+                              className="w-full p-2.5 border-2 rounded-xl font-bold text-sm focus:border-indigo-400 outline-none"
+                              placeholder="username" />
+                          </div>
+                          <div className="flex-1 min-w-[140px]">
+                            <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">Password</label>
+                            <input type="text" value={newUserForm.password}
+                              onChange={e => { setNewUserForm(f => ({ ...f, password: e.target.value })); setUserMsg(''); }}
+                              className="w-full p-2.5 border-2 rounded-xl font-bold text-sm focus:border-indigo-400 outline-none"
+                              placeholder="password" />
+                          </div>
+                          <div>
+                            <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">Role</label>
+                            <select value={newUserForm.role}
+                              onChange={e => setNewUserForm(f => ({ ...f, role: e.target.value }))}
+                              className="p-2.5 border-2 rounded-xl font-bold text-sm focus:border-indigo-400 outline-none">
+                              <option value="user">User</option>
+                              <option value="admin">Admin</option>
+                            </select>
+                          </div>
+                          <button onClick={addUser}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-black px-5 py-2.5 rounded-xl shadow transition-all active:scale-95 text-sm">
+                            ເພີ່ມ
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
+                  <div className="bg-slate-800 p-5 text-white font-black uppercase tracking-widest text-xs">📋 Manual Adjustment List</div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px]">
+                      <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase">
+                        <tr>
+                          <th className="p-4">ID</th>
+                          <th className="p-4 text-left">ຊື່ພະນັກງານ</th>
+                          <th className="p-4 text-center text-sky-600">Scan Mode</th>
+                          <th className="p-4 text-right">ຖານເງິນເດືອນ</th>
+                          <th className="p-4 text-right text-purple-600">
+                            <div className="flex flex-col items-end gap-1">
+                              <span>ໂບນັດພິເສດ</span>
+                              <button onClick={() => setShowConfirm('special')} className="bg-purple-600 text-white text-[9px] px-2 py-0.5 rounded shadow hover:bg-purple-700 active:scale-95 transition-all">RESET ALL</button>
+                            </div>
+                          </th>
+                          <th className="p-4 text-right text-rose-600">
+                            <div className="flex flex-col items-end gap-1">
+                              <span>ເງິນເບີກ</span>
+                              <button onClick={() => setShowConfirm('advance')} className="bg-rose-600 text-white text-[9px] px-2 py-0.5 rounded shadow hover:bg-rose-700 active:scale-95 transition-all">RESET ALL</button>
+                            </div>
+                          </th>
+                          <th className="p-4 text-center text-emerald-600">ໂບນັດ OT</th>
+                          <th className="p-4 text-center text-blue-600">ເພີ່ມຄືນ (ຊມ)</th>
+                          <th className="p-4 text-left text-blue-600">ເຫດຜົນ</th>
+                          <th className="p-4 text-center">ຈັດການ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(results ? employees.filter(e => results[e.code]) : employees).map((emp) => {
+                          const isEditing = editCode === emp.code;
+                          const update = (field, val) => setEmployees(prev => prev.map(e => e.code === emp.code ? { ...e, [field]: val } : e));
+                          return (
+                          <tr key={emp.code} className={`border-t transition-colors ${isEditing ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
+                            <td className="p-4 text-center font-bold text-slate-400">{emp.code}</td>
+                            <td className="p-4 font-black">
+                              {isEditing
+                                ? <input className="p-1 border rounded w-full font-bold" value={emp.name} onChange={e => update('name', e.target.value)} />
+                                : emp.name}
+                            </td>
+                            <td className="p-4 text-center">
+                              {isEditing
+                                ? <button
+                                    onClick={() => update('scan', emp.scan === 2 ? 4 : 2)}
+                                    className={`px-3 py-1 rounded-lg text-[11px] font-black transition-all ${emp.scan === 2 ? 'bg-sky-500 text-white shadow-md' : 'bg-violet-500 text-white shadow-md'}`}>
+                                    {emp.scan}S
+                                  </button>
+                                : <span className={`px-2 py-0.5 rounded text-[10px] font-black ${emp.scan === 2 ? 'bg-sky-100 text-sky-700' : 'bg-violet-100 text-violet-700'}`}>{emp.scan}S</span>}
+                            </td>
+                            <td className="p-4 text-right font-mono font-black text-blue-600">
+                              {isEditing
+                                ? <NumericInput className="p-1 border-2 border-blue-200 rounded w-32 text-right outline-none" value={emp.base} onChange={val => update('base', val)} />
+                                : emp.base.toLocaleString()}
+                            </td>
+                            <td className="p-4 text-right font-mono font-black text-purple-600">
+                              {isEditing
+                                ? <NumericInput className="p-1 border-2 border-purple-200 rounded w-32 text-right outline-none" value={emp.special_bonus} onChange={val => update('special_bonus', val)} />
+                                : (emp.special_bonus || 0).toLocaleString()}
+                            </td>
+                            <td className="p-4 text-right font-mono font-black text-rose-600">
+                              {isEditing
+                                ? <NumericInput className="p-1 border-2 border-rose-200 rounded w-32 text-right outline-none" value={emp.advance} onChange={val => update('advance', val)} />
+                                : (emp.advance || 0).toLocaleString()}
+                            </td>
+                            <td className="p-4 text-center">
+                              <button onClick={() => update('ot_bonus_enabled', emp.ot_bonus_enabled === false ? true : false)}
+                                className={`px-4 py-1 rounded-lg text-[10px] font-bold transition-all ${emp.ot_bonus_enabled !== false ? 'bg-emerald-500 text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
+                                {emp.ot_bonus_enabled !== false ? 'ເປີດ' : 'ປິດ'}
+                              </button>
+                            </td>
+                            <td className="p-4 text-center font-mono font-black text-blue-600">
+                              {isEditing
+                                ? <input type="number" step="0.5" min="0" className="p-1 border-2 border-blue-200 rounded w-20 text-right outline-none font-bold" value={emp.addback_hrs || 0} onChange={e => update('addback_hrs', parseFloat(e.target.value) || 0)} />
+                                : (emp.addback_hrs || 0) > 0 ? `+${emp.addback_hrs}h` : '—'}
+                            </td>
+                            <td className="p-4 text-left text-slate-500 text-[10px]">
+                              {isEditing
+                                ? <input type="text" className="p-1 border rounded w-36 text-[11px] outline-none" placeholder="ເຫດຜົນ..." value={emp.addback_reason || ''} onChange={e => update('addback_reason', e.target.value)} />
+                                : emp.addback_reason || ''}
+                            </td>
+                            <td className="p-4 text-center">
+                              <button onClick={() => setEditCode(isEditing ? null : emp.code)}
+                                className={`px-4 py-1 rounded-lg text-[10px] font-black shadow-sm ${isEditing ? 'bg-emerald-600 text-white' : 'bg-amber-100 text-amber-600'}`}>
+                                {isEditing ? 'SAVE' : 'EDIT'}
+                              </button>
+                            </td>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── RESULTS TAB ─────────────────────────────────────────────── */}
+            {tab === "results" && results && (
+              <div className="space-y-8 animate-in">
+                <div className="flex justify-end">
+                  <button
+                    onClick={generateBulkPDF}
+                    disabled={bulkGenerating}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-black px-6 py-3 rounded-2xl shadow-lg flex items-center gap-3 transition-all active:scale-95">
+                    {bulkGenerating
+                      ? <><span className="animate-spin">⏳</span> ກຳລັງສ້າງ {bulkProgress}/{orderedResults.length} ...</>
+                      : <>📦 ດາວໂຫລດທັງໝົດ (ZIP)</>}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <div className="bg-gradient-to-br from-blue-700 to-indigo-800 text-white p-7 rounded-[32px] shadow-2xl">
+                    <p className="text-[10px] font-black uppercase opacity-60 mb-1">Net Pay (ສຸດທິ)</p>
+                    <p className="text-4xl font-black tracking-tighter font-mono">{fmt(totals.netPay)}</p>
+                  </div>
+                  <div className="bg-white p-7 rounded-[32px] border shadow-md">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-1">ລວມລາຍຮັບ (Gross)</p>
+                    <p className="text-2xl font-black font-mono">{fmt(totals.totalGross)}</p>
+                  </div>
+                  <div className="bg-white p-7 rounded-[32px] border shadow-md">
+                    <p className="text-[10px] font-black text-rose-400 uppercase mb-1">ລວມເງິນເບີກ</p>
+                    <p className="text-2xl font-black font-mono text-rose-500">({fmt(totals.advance)})</p>
+                  </div>
+                  <div className="bg-white p-7 rounded-[32px] border shadow-md flex flex-col items-center justify-center text-center">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-1">ພະນັກງານ</p>
+                    <p className="text-4xl font-black">{orderedResults.length}</p>
+                  </div>
+                </div>
+
+                {(monthCfg.holidays || []).length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3 flex items-start gap-3">
+                    <span className="text-amber-500 text-lg mt-0.5">🏖️</span>
+                    <div>
+                      <p className="text-[11px] font-black text-amber-800 mb-1">ວັນພັກລາດຊະການ {(monthCfg.holidays || []).length} ວັນ — ບໍ່ນັບເປັນຂາດ, ວັນເຮັດວຽກ = {workingDays} ວັນ</p>
+                      <div className="flex flex-wrap gap-2">
+                        {(monthCfg.holidays || []).map((h, i) => {
+                          const hObj = typeof h === 'object' ? h : { date: h, name: '' };
+                          return (
+                            <span key={i} className="bg-amber-200 text-amber-900 text-[10px] font-black px-2 py-0.5 rounded-lg">
+                              ວທ {hObj.date}{hObj.name ? ` — ${hObj.name}` : ''}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {(() => { const anyOtBonus = employees.some(e => e.ot_bonus_enabled !== false); return (
+                <div className="bg-white rounded-[40px] border shadow-2xl overflow-hidden">
+                  <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
+                  <table className="min-w-full text-[10px] border-collapse whitespace-nowrap">
+                    <thead className="bg-slate-900 text-white font-black sticky top-0 z-20">
+                      <tr>
+                        <th className="px-4 py-3 text-left border-r border-white/5 uppercase tracking-widest whitespace-nowrap sticky left-0 z-30 bg-slate-900">ລາຍຊື່ (ກົດເບິ່ງ Raw Data)</th>
+                        <th className="px-3 py-3 border-r border-white/5">ມາ/ວວ</th>
+                        <th className="px-3 py-3 border-r border-white/5 text-rose-300 w-[110px]">ຂາດ (Absent)</th>
+                        <th className="px-3 py-3 border-r border-white/5">OT (ຊມ)</th>
+                        <th className="px-3 py-3 border-r border-white/5 text-right text-slate-300">ເງິນເດືອນພື້ນຖານ</th>
+                        <th className="px-3 py-3 border-r border-white/5 text-right">ຄ່າແຮງ</th>
+                        <th className="px-3 py-3 border-r border-white/5 text-right">ເງິນ OT</th>
+                        <th className="px-3 py-3 border-r border-white/5 text-right text-purple-300">ພິເສດ</th>
+                        {anyOtBonus && <th className="px-3 py-3 border-r border-white/5 text-right text-emerald-300">ໂບນັດ OT</th>}
+                        <th className="px-3 py-3 border-r border-white/5 text-right text-rose-300">ຫັກເບີກ</th>
+                        <th className="px-4 py-3 bg-slate-800 font-black text-center text-blue-300 text-xs tracking-widest uppercase">NET PAY</th>
+                        <th className="px-3 py-3 bg-slate-700 text-center text-slate-300 text-xs uppercase">Slip</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderedResults.map(([code, r], idx) => (
+                        <tr key={code} className={`border-t transition-colors group ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                          <td className={`px-4 py-2 font-black border-r border-slate-100 sticky left-0 z-10 ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
+                            <div className="flex items-center gap-2 text-blue-700 underline cursor-pointer hover:bg-blue-100/50 px-2 py-1 rounded-lg transition-all" onClick={() => setSelectedEmp(r)}>
+                              {r.hasIssues && <span className="text-amber-500" title="ມີບັນຫາ">⚠️</span>}
+                              {r.name}
+                              <span className={`no-underline text-[8px] font-black px-1.5 py-0.5 rounded ${r.scanMode === 2 ? 'bg-sky-100 text-sky-600' : 'bg-violet-100 text-violet-600'}`}>{r.scanMode}S</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-center font-black text-slate-500 border-r font-mono">{Number.isInteger(r.attended) ? r.attended : r.attended.toFixed(1)}/{r.workingDays}</td>
+                          <td className="px-3 py-2 text-center bg-rose-50/50 border-r w-[110px] whitespace-normal">
+                            <div className="font-black text-rose-600">{r.absent} ວັນ</div>
+                            {r.absentDates.length > 0 && (
+                              <div className="text-[8px] text-rose-400 font-bold leading-snug mt-0.5 break-words">
+                                ({r.absentDates.join(", ")})
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-center font-black text-purple-600 border-r font-mono">{fmtHours(r.otH)}</td>
+                          <td className="px-3 py-2 text-right border-r text-slate-500 font-black font-mono">{fmt(r.basePay)}</td>
+                          <td className="px-3 py-2 text-right border-r min-w-[140px]">
+                            <div className="font-black font-mono">{fmt(r.workPay)}</div>
+                            {(() => {
+                              const tgt = r.rateDays * r.standardMinsPerDay;
+                              const pct = Math.min(100, Math.round(r.totalPayMins / tgt * 100));
+                              const barCol = pct >= 95 ? 'bg-emerald-400' : pct >= 80 ? 'bg-amber-400' : 'bg-rose-400';
+                              const txtCol = pct >= 95 ? 'text-emerald-600' : pct >= 80 ? 'text-amber-600' : 'text-rose-500';
+                              return (
+                                <div className="mt-1">
+                                  <div className="flex justify-between text-[8px] font-bold mb-0.5">
+                                    <span className="text-slate-400">{fmtHours(r.totalPayMins/60)} / {fmtHours(tgt/60)}</span>
+                                    <span className={`font-black ${txtCol}`}>{pct}%</span>
+                                  </div>
+                                  <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                    <div className={`h-1.5 rounded-full ${barCol}`} style={{width:`${pct}%`}}></div>
+                                  </div>
+                                  {r.absentDeduction > 0 && <div className="text-[8px] text-rose-500 font-bold mt-0.5">ຫັກ {fmt(r.absentDeduction)}</div>}
+                                  {(r.addbackApplied || 0) > 0 && <div className="text-[8px] text-blue-500 font-bold mt-0.5">✚ {fmtHours(r.addbackApplied/60)}{r.addback_reason ? ` (${r.addback_reason})` : ''}</div>}
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-3 py-2 text-right font-black font-mono text-purple-600 border-r">{r.otPay > 0 ? fmt(r.otPay) : "—"}</td>
+                          <td className="px-3 py-2 text-right font-black font-mono text-purple-700 border-r">{(r.special_bonus || 0) > 0 ? fmt(r.special_bonus) : "—"}</td>
+                          {anyOtBonus && <td className={`px-3 py-2 text-right font-black font-mono border-r ${r.ot_bonus_enabled === false ? 'bg-slate-100/60' : 'text-emerald-600'}`}>{r.ot_bonus_enabled !== false ? (r.otBonus > 0 ? fmt(r.otBonus) : "—") : ""}</td>}
+                          <td className="px-3 py-2 text-right font-black font-mono text-rose-600 border-r bg-rose-50/20">{(r.advance || 0) > 0 ? `(${fmt(r.advance)})` : "—"}</td>
+                          <td className={`px-4 py-2 text-right font-black text-[13px] bg-slate-50 group-hover:bg-blue-50 transition-colors font-mono ${r.netPay < 0 ? 'text-rose-600' : 'text-blue-800'}`}>{fmt(r.netPay)}</td>
+                          <td className="px-3 py-2 text-center bg-slate-700/5">
+                            <button onClick={() => setSlipEmp(r)} title="ສ້າງໃບແຈ້ງເງິນເດືອນ"
+                              className="bg-blue-600 hover:bg-blue-700 text-white text-[9px] font-black px-2 py-1 rounded-lg shadow transition-all active:scale-95 whitespace-nowrap">
+                              📄 Slip
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-slate-900 text-white font-black text-[10px] uppercase">
+                      <tr className="border-t border-white/10">
+                        <td colSpan={4} className="px-4 py-3 text-right opacity-60 tracking-widest sticky left-0 bg-slate-900">Totals Summary</td>
+                        <td className="px-3 py-3 text-right opacity-40 font-mono">—</td>
+                        <td className="px-3 py-3 text-right font-mono">{fmt(totals.workPay)}</td>
+                        <td className="px-3 py-3 text-right text-purple-400 font-mono">{fmt(totals.otPay)}</td>
+                        <td className="px-3 py-3 text-right text-purple-300 font-mono">{fmt(totals.specialBonus)}</td>
+                        {anyOtBonus && <td className="px-3 py-3 text-right text-emerald-400 font-mono">{fmt(totals.otBonus)}</td>}
+                        <td className="px-3 py-3 text-right text-rose-400 font-mono">({fmt(totals.advance)})</td>
+                        <td className="px-4 py-3 text-right text-base text-blue-300 bg-slate-800 font-mono">{fmt(totals.netPay)}</td>
+                        <td className="px-3 py-3 bg-slate-700"></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                  </div>
+                </div>
+                ); })()}
+              </div>
+            )}
+
+            {tab === "results" && !results && (
+              <div className="text-center py-24 text-slate-400">
+                <div className="text-7xl mb-4 opacity-30">📑</div>
+                <p className="font-black text-xl">ຍັງບໍ່ມີຂໍ້ມູນ — ກະລຸນາອັບໂຫລດໄຟລ໌ CSV ກ່ອນ</p>
+              </div>
+            )}
+          </main>
+
+          {/* SALARY SLIP MODAL */}
+          {slipEmp && <SlipModal emp={slipEmp} monthCfg={monthCfg} onClose={() => setSlipEmp(null)} />}
+
+          {/* RAW DATA MODAL */}
+          {selectedEmp && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in">
+              <div className="bg-white w-full max-w-5xl max-h-[90vh] rounded-[40px] shadow-2xl overflow-hidden flex flex-col">
+                <div className="p-8 bg-slate-900 text-white flex justify-between items-center">
+                  <div>
+                    <h2 className="text-2xl font-black">{selectedEmp.name}</h2>
+                    <p className="text-blue-300 text-xs font-bold uppercase tracking-widest">Raw Data Check — Mode: {selectedEmp.scanMode}-Scan</p>
+                  </div>
+                  <button onClick={() => setSelectedEmp(null)} className="text-3xl hover:scale-110 transition-transform bg-white/10 w-12 h-12 rounded-full flex items-center justify-center">✕</button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-8">
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead className="bg-slate-100 text-[10px] font-black uppercase text-slate-500">
+                      <tr>
+                        <th className="p-4 border-b">Date</th>
+                        <th className="p-4 border-b">Raw Logs</th>
+                        <th className="p-4 border-b">Work (no OT)</th>
+                        <th className="p-4 border-b">Status</th>
+                        <th className="p-4 border-b text-center">Val</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({ length: selectedEmp.dataTotalDays || monthCfg.totalDays }, (_, i) => i + 1).map(day => {
+                        const log = selectedEmp.dailyLog.get(day);
+                        const isSun = new Date(selectedEmp.dataYear || monthCfg.year, (selectedEmp.dataMonth || monthCfg.month) - 1, day).getDay() === 0;
+                        const workTime = log ? log.netM : 0;
+                        const isLongDay = workTime >= 500;
+                        return (
+                          <tr key={day} className={`border-b hover:bg-slate-50/50 ${isSun ? 'bg-amber-50/30' : ''} ${(!log || log.validCount === 0 || log?.countAsAbsent) && !isSun ? 'bg-rose-50/80' : ''}`}>
+                            <td className="p-4 font-black">
+                              {day}{getOrdinal(day)} {isSun && <span className="text-amber-600 font-bold ml-1 text-[9px] uppercase">Sunday</span>}
+                            </td>
+                            <td className="p-4 font-mono font-black text-[10px]">
+                              {log && log.validCount > 0
+                                ? log.clusters
+                                  ? <>
+                                      {log.clusters.flatMap((cluster, ci) =>
+                                        cluster.map(t => ({ t, used: log.usedClusterIdxs.has(ci) }))
+                                      ).sort((a, b) => a.t - b.t).map(({ t, used }, i) => (
+                                        <span key={i}>
+                                          {i > 0 && <span className="text-slate-300"> | </span>}
+                                          <span className={used ? 'text-emerald-600' : 'text-orange-500'} title={used ? 'ໃຊ້ຄຳນວນ' : 'ຍົກເວັ້ນ'}>
+                                            {formatMinsToClock(t)}{!used && <span className="text-[8px] ml-0.5 opacity-60">(x)</span>}
+                                          </span>
+                                        </span>
+                                      ))}
+                                      {log.filledScan && (
+                                        <span className="text-sky-500 ml-1" title={`ໃຊ້ ${log.filledScan.type} ສະເລ່ຍ`}>
+                                          {" | "}~{formatMinsToClock(log.filledScan.time)}<span className="text-[8px] ml-0.5 opacity-70">(avg)</span>
+                                        </span>
+                                      )}
+                                      {log.filledScan4 && log.filledScan4.map((fs, i) => (
+                                        <span key={i} className="text-sky-500 ml-1" title={`ໃຊ້ ${fs.type} ສະເລ່ຍ`}>
+                                          {" | "}~{formatMinsToClock(fs.time)}<span className="text-[8px] ml-0.5 opacity-70">({fs.type})</span>
+                                        </span>
+                                      ))}
+                                    </>
+                                  : log.scans.filter(s => s !== null).sort((a, b) => a - b).map(s => formatMinsToClock(s)).join(" | ")
+                                : "---"}
+                            </td>
+                            <td className={`p-4 font-mono font-black ${isLongDay ? 'text-blue-600' : 'text-slate-400'}`}>
+                              {log && log.validCount > 0 && !log.countAsAbsent ? fmtHours(minsToH(log.netM)) : "—"}
+                              {isLongDay && <span className="ml-1 text-[8px] bg-blue-100 px-1 rounded font-black">EXCEED LIMIT</span>}
+                            </td>
+                            <td className="p-4">
+                              {(!log || log.validCount === 0) && !isSun && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
+                              {log?.countAsAbsent && <span className="bg-rose-500 text-white px-2 py-0.5 rounded-lg font-black text-[9px]">ສະແກນດຽວ — ຂາດ</span>}
+                              {log?.warning && !log.countAsAbsent && <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] border ${log.warning.includes('0.5') ? 'bg-blue-100 text-blue-700 border-blue-200' : (log.filledScan || log.filledScan4) ? 'bg-sky-100 text-sky-700 border-sky-200' : 'bg-amber-100 text-amber-700 border-amber-200'}`}>{log.warning}</span>}
+                              {log && log.validCount > 0 && !log.warning && !isSun && <span className="text-emerald-600 font-black text-[9px]">✅ OK</span>}
+                              {isSun && <span className="text-slate-400 italic text-[9px]">Holiday</span>}
+                            </td>
+                            <td className="p-4 text-center font-black text-purple-600 font-mono">{log ? log.dayVal.toFixed(1) : 0}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+
+                  {/* DEDUCTION BREAKDOWN */}
+                  {selectedEmp.absentDeduction > 0 && (() => {
+                    const BREAK = 40;
+                    const stdMins = selectedEmp.standardMinsPerDay;
+                    const modalHolidayMap = new Map((monthCfg.holidays || []).map(h => typeof h === 'object' ? [Number(h.date), h.name || ''] : [Number(h), '']));
+                    const rows = [];
+                    for (let d = 1; d <= (selectedEmp.dataTotalDays || monthCfg.totalDays); d++) {
+                      const isSun = new Date(selectedEmp.dataYear || monthCfg.year, (selectedEmp.dataMonth || monthCfg.month) - 1, d).getDay() === 0;
+                      if (isSun) continue;
+                      if (modalHolidayMap.has(d)) continue;
+                      const log = selectedEmp.dailyLog.get(d);
+                      const isAbsent = !log || log.validCount === 0 || log.countAsAbsent;
+                      if (isAbsent) {
+                        rows.push({ day: d, reason: 'ຂາດວຽກ (×2)', shortMins: stdMins, deduct: Math.round(2 * stdMins * selectedEmp.hourlyRate / 60) });
+                      } else {
+                        const payMins = selectedEmp.scanMode === 2 ? log.netM + BREAK : log.netM;
+                        const shortMins = Math.max(0, stdMins - payMins);
+                        if (shortMins > 0) {
+                          const clusters = log.clusters || [];
+                          const firstScan = clusters.length > 0 ? clusters[0][0] : null;
+                          const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
+                          const lastScan = lastC ? lastC[lastC.length - 1] : null;
+                          const parts = [];
+                          if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
+                          if (lastScan !== null && lastScan < 1110) parts.push('ກັບໄວ');
+                          if (selectedEmp.scanMode === 4 && parts.length === 0) parts.push('ຊ່ວງພັກຍາວ');
+                          rows.push({ day: d, reason: parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ', shortMins, deduct: Math.round(shortMins * selectedEmp.hourlyRate / 60) });
+                        }
+                      }
+                    }
+                    return (
+                      <div className="mt-6 bg-rose-50 border border-rose-100 rounded-2xl p-5">
+                        <p className="text-xs font-black text-rose-600 uppercase tracking-widest mb-3">ລາຍລະອຽດການຫັກ / Deduction Breakdown</p>
+                        <table className="w-full text-[11px]">
+                          <thead>
+                            <tr className="text-rose-400 font-black border-b border-rose-200">
+                              <th className="text-left py-1.5 pr-3">ວັນທີ</th>
+                              <th className="text-left py-1.5 pr-3">ສາເຫດ</th>
+                              <th className="text-right py-1.5 pr-3">ນາທີຫຼຸດ</th>
+                              <th className="text-right py-1.5">ຫັກ (ກີບ)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(r => (
+                              <tr key={r.day} className="border-b border-rose-100">
+                                <td className="py-1.5 pr-3 font-bold">{r.day}</td>
+                                <td className="py-1.5 pr-3 font-bold">{r.reason}</td>
+                                <td className="py-1.5 pr-3 text-right font-mono">{r.shortMins}ນທ</td>
+                                <td className="py-1.5 text-right font-mono text-rose-600 font-black">({fmt(r.deduct)})</td>
+                              </tr>
+                            ))}
+                            <tr className="border-t-2 border-rose-300">
+                              <td colSpan={3} className="py-2 font-black text-right pr-3 text-rose-700">ລວມຫັກທັງໝົດ</td>
+                              <td className="py-2 text-right font-mono text-rose-700 font-black">({fmt(rows.reduce((a, r) => a + r.deduct, 0))})</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
+                <div className="p-5 bg-slate-50 border-t flex flex-wrap gap-6 text-[9px] font-black uppercase text-slate-400 tracking-[0.1em]">
+                  <span>🔥 OT Bonus: 1M LAK (if OT &gt; 39h)</span>
+                  <span>⚡ Long Work Bonus: 1M LAK (if absent + short-hour days &lt;= 4)</span>
+                  <span className="flex items-center gap-1"><span className="text-emerald-600 font-black">07:30</span> = ໃຊ້ຄຳນວນ</span>
+                  <span className="flex items-center gap-1"><span className="text-orange-500 font-black">14:00(x)</span> = ຍົກເວັ້ນ (ເກີນ/ຊ້ຳ)</span>
+                  <span className="flex items-center gap-1"><span className="text-sky-500 font-black">~17:05(avg)</span> = ຄາດຄະເນຈາກສະເລ່ຍ</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* START NEW MONTH MODAL */}
+          {showNewMonth && newMonthDraft && (() => {
+            const unsaved = !!combinedDataRef.current;
+            return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in">
+              <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl border border-slate-100">
+                <div className="w-16 h-16 rounded-full bg-indigo-100 text-indigo-600 mx-auto flex items-center justify-center mb-4 text-2xl">📅</div>
+                <h3 className="text-xl font-black mb-4 uppercase text-center">ເລີ່ມເດືອນໃໝ່ / ເຮັດໃໝ່</h3>
+
+                {/* Editable month fields */}
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">ຊື່ເດືອນ (label)</label>
+                    <input
+                      className="w-full p-3 border-2 border-indigo-200 rounded-xl font-black text-center text-indigo-700 outline-none focus:border-indigo-500"
+                      value={newMonthDraft.label}
+                      onChange={e => updateDraftMonth('label', e.target.value)}
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">ເດືອນ (1–12)</label>
+                      <input type="number" min="1" max="12"
+                        className="w-full p-3 border-2 border-slate-200 rounded-xl font-black text-center outline-none focus:border-indigo-400"
+                        value={newMonthDraft.month}
+                        onChange={e => updateDraftMonth('month', e.target.value)}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">ປີ</label>
+                      <input type="number" min="2020" max="2099"
+                        className="w-full p-3 border-2 border-slate-200 rounded-xl font-black text-center outline-none focus:border-indigo-400"
+                        value={newMonthDraft.year}
+                        onChange={e => updateDraftMonth('year', e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-center text-slate-400 text-xs font-bold">
+                    {newMonthDraft.totalDays} ວັນ &nbsp;·&nbsp; ອາທິດ: {(() => { const a = []; for (let d = 1; d <= newMonthDraft.totalDays; d++) if (new Date(newMonthDraft.year, newMonthDraft.month - 1, d).getDay() === 0) a.push(d); return a.join(', '); })()}
+                  </p>
+                </div>
+
+                {/* What will happen */}
+                <div className="bg-slate-50 rounded-2xl p-4 mb-4 space-y-2 text-sm font-bold">
+                  <p className="text-slate-500 text-xs uppercase tracking-widest mb-2">ສິ່ງທີ່ຈະເກີດຂຶ້ນ</p>
+                  <div className="flex items-center gap-2 text-emerald-700"><span>✅</span><span>ຊື່, ເງິນເດືອນຖານ, Scan mode — ເກັບໄວ້</span></div>
+                  <div className="flex items-center gap-2 text-rose-600"><span>🔄</span><span>Advance + ໂບນັດພິເສດ → 0 ທຸກຄົນ</span></div>
+                  <div className="flex items-center gap-2 text-rose-600"><span>🗑</span><span>Scan data ປັດຈຸບັນ → ລ້າງ</span></div>
+                  <div className="flex items-center gap-2 text-blue-600"><span>📋</span><span>ວັນພັກ → Reset (ຕ້ອງຕັ້ງໃໝ່)</span></div>
+                </div>
+
+                {unsaved && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 flex items-start gap-2">
+                    <span className="text-amber-500 text-lg">⚠️</span>
+                    <p className="text-amber-700 font-bold text-xs">ຍັງບໍ່ໄດ້ Save Session — ຂໍ້ມູນ scan ປັດຈຸບັນຈະຫາຍຖ້າຢືນຢັນ</p>
+                  </div>
+                )}
+                <div className="flex gap-3">
+                  <button onClick={() => { setShowNewMonth(false); setNewMonthDraft(null); }}
+                    className="flex-1 py-3 bg-slate-100 text-slate-600 font-black rounded-2xl hover:bg-slate-200 transition-all">ຍົກເລີກ</button>
+                  <button onClick={startNewMonth}
+                    className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95">📅 ເລີ່ມໄດ້ເລີຍ</button>
+                </div>
+              </div>
+            </div>
+            );
+          })()}
+
+          {/* SAVE SESSION MODAL */}
+          {showSaveSession && (() => {
+            const resolvedLabel = sessionName.trim() || monthCfg.label;
+            const isDuplicate = sessions.some(s => s.label === resolvedLabel);
+            return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in">
+              <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl border border-slate-100 text-center">
+                <div className="w-16 h-16 rounded-full bg-blue-100 text-blue-600 mx-auto flex items-center justify-center mb-4 text-2xl">💾</div>
+                <h3 className="text-xl font-black mb-2 uppercase">Save Session</h3>
+                <p className="text-slate-500 font-bold text-sm mb-4">ຕັ້ງຊື່ session ນີ້</p>
+                <input
+                  className="w-full p-3 border-2 border-blue-200 rounded-xl font-bold text-center outline-none focus:border-blue-500"
+                  placeholder={monthCfg.label}
+                  value={sessionName}
+                  onChange={e => setSessionName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && saveCurrentSession()}
+                  autoFocus
+                />
+                {isDuplicate && (
+                  <p className="text-amber-600 font-bold text-xs mt-2 mb-2">⚠️ ມີ session ຊື່ "{resolvedLabel}" ຢູ່ແລ້ວ — ຈະ save ເປັນລາຍການໃໝ່ທີ່ຊ້ຳ</p>
+                )}
+                {!isDuplicate && <div className="mb-6" />}
+                <div className="flex gap-3">
+                  <button onClick={() => { setShowSaveSession(false); setSessionName(""); }} className="flex-1 py-3 bg-slate-100 text-slate-600 font-black rounded-2xl hover:bg-slate-200 transition-all">ຍົກເລີກ</button>
+                  <button onClick={saveCurrentSession} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95">💾 Save</button>
+                </div>
+              </div>
+            </div>
+            );
+          })()}
+
+          {/* RESET / DELETE CONFIRMATION */}
+          {showConfirm && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in">
+              <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl border border-slate-100 text-center">
+                <div className="w-16 h-16 rounded-full bg-rose-100 text-rose-600 mx-auto flex items-center justify-center mb-4 text-2xl">⚠️</div>
+                <h3 className="text-xl font-black mb-2 uppercase">ຢືນຢັນ?</h3>
+                <p className="text-slate-500 font-bold text-sm mb-6">
+                  {showConfirm === 'advance' && <>ຕັ້ງ ເງິນເບີກ ທຸກຄົນໃຫ້ເປັນ <span className="text-blue-600">0</span></>}
+                  {showConfirm === 'special' && <>ຕັ້ງ ໂບນັດພິເສດ ທຸກຄົນໃຫ້ເປັນ <span className="text-blue-600">0</span></>}
+                  {showConfirm === 'clearWork' && <>ລ້າງຂໍ້ມູນ session ປະຈຸບັນທັງໝົດ (scan data + results)</>}
+                  {showConfirm?.type === 'deleteSession' && <>ລຶບ session "<span className="text-rose-600">{showConfirm.label}</span>" ອອກ?</>}
+                </p>
+                <div className="flex gap-3">
+                  <button onClick={() => setShowConfirm(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-black rounded-2xl hover:bg-slate-200 transition-all">ຍົກເລີກ</button>
+                  <button onClick={() => {
+                    if (showConfirm === 'advance') resetAllAdvances();
+                    else if (showConfirm === 'special') resetAllSpecialBonuses();
+                    else if (showConfirm === 'clearWork') { clearCurrentWork(); setShowConfirm(null); }
+                    else if (showConfirm?.type === 'deleteSession') { deleteSession(showConfirm.id); setShowConfirm(null); }
+                  }} className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95">
+                    ຢືນຢັນ
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <footer className="text-center py-10 opacity-30 text-[10px] font-black uppercase tracking-[0.3em]">
+            Stable Payroll Engine — v4.1 Auto Sunday Detection
+          </footer>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
