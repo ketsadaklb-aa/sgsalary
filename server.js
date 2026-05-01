@@ -10,18 +10,25 @@ app.use(express.static(__dirname));
 
 let pool = null;
 let dbReady = false;
+let dbError = null;
 
 if (process.env.DATABASE_URL) {
-  const isInternal = process.env.DATABASE_URL.includes('railway.internal');
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: isInternal ? false : { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: false },
   });
 }
 
 async function initDB() {
-  if (!pool) { console.log('No DATABASE_URL — running without cloud DB'); return; }
+  if (!pool) {
+    dbError = 'No DATABASE_URL set';
+    console.log('No DATABASE_URL — running without cloud DB');
+    return;
+  }
   try {
+    console.log('Connecting to DB...');
+    await pool.query('SELECT 1'); // test connection
+    console.log('DB connection OK, creating tables...');
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         username VARCHAR(100) PRIMARY KEY,
@@ -55,9 +62,14 @@ async function initDB() {
     dbReady = true;
     console.log('PostgreSQL ready');
   } catch (e) {
+    dbError = e.message;
     console.error('DB init error:', e.message);
   }
 }
+
+app.get('/api/health', (req, res) => {
+  res.json({ dbReady, dbError, hasUrl: !!process.env.DATABASE_URL });
+});
 
 const requireDB = (req, res, next) => {
   if (!dbReady) return res.status(503).json({ error: 'Database not available' });
