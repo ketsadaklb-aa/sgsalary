@@ -84,9 +84,17 @@
     // ─── HELPERS ─────────────────────────────────────────────────────────────
     const parseTime = (s) => {
       if (!s || !s.trim()) return null;
-      const p = s.trim().split(":");
+      const raw = s.trim();
+      const isPM = /pm/i.test(raw);
+      const isAM = /am/i.test(raw);
+      const cleaned = raw.replace(/\s*(am|pm)\s*/i, '').trim();
+      const p = cleaned.split(":");
       if (p.length < 2) return null;
-      return parseInt(p[0]) * 60 + parseInt(p[1]);
+      let h = parseInt(p[0]), m = parseInt(p[1]);
+      if (isNaN(h) || isNaN(m)) return null;
+      if (isPM && h !== 12) h += 12;
+      if (isAM && h === 12) h = 0;
+      return h * 60 + m;
     };
 
     const formatMinsToClock = (m) => {
@@ -1172,6 +1180,45 @@
       const processFiles = useCallback(async (files) => {
         if (!files.length) return;
         setStatus("ກຳລັງປະມວນຜົນ...");
+
+        // ── Date-format detection & normalisation ─────────────────────────────────────────────
+        // Supports D/M/YYYY, M/D/YYYY and YYYY-MM-DD from any biometric export.
+        // Detection: first part >12 → D/M/Y; second part >12 → M/D/Y;
+        // both ≤12 → compare first part against configured month.
+        const detectSlashFmt = (samples) => {
+          for (const s of samples) {
+            if (!s || s.includes('-')) continue;
+            const p = s.split('/');
+            if (p.length !== 3) continue;
+            const a = Number(p[0]), b = Number(p[1]);
+            if (a > 12) return 'dmy';
+            if (b > 12) return 'mdy';
+          }
+          const ref = samples.find(s => s && !s.includes('-') && s.split('/').length === 3);
+          if (ref && Number(ref.split('/')[0]) === monthCfg.month) return 'mdy';
+          return 'dmy';
+        };
+        const toISO = (raw, fmt) => {
+          if (!raw) return raw;
+          if (raw.includes('-')) return raw;
+          const p = raw.split('/');
+          if (p.length !== 3) return raw;
+          const [a, b, c] = p.map(Number);
+          const [d, m, y] = fmt === 'mdy' ? [b, a, c] : [a, b, c];
+          if (!d || !m || !y) return raw;
+          return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        };
+        // ─────────────────────────────────────────────────────────────────────────────
+
+        // First pass: collect raw date strings to detect slash format
+        const rawSamples = [];
+        for (const file of files) {
+          const text = await file.text();
+          const result = window.Papa.parse(text, { header: false, skipEmptyLines: true });
+          result.data.slice(1).forEach(r => { const ds = r[4]?.toString().trim(); if (ds) rawSamples.push(ds); });
+        }
+        const slashFmt = detectSlashFmt(rawSamples);
+
         const combinedData = {};
         employees.forEach(e => combinedData[e.code] = []);
         // track employees discovered in CSV but not in our list
@@ -1191,8 +1238,9 @@
                 discoveredEmps[code] = { code, name, scan: 4, base: 0, special_bonus: 0, advance: 0 };
               }
             }
-            const dateStr = r[4]?.toString().trim();
-            if (!dateStr) return;
+            const rawDate = r[4]?.toString().trim();
+            if (!rawDate) return;
+            const dateStr = toISO(rawDate, slashFmt); // normalised to YYYY-MM-DD
             const scans = Array.from({ length: 5 }, (_, j) => parseTime(r[5 + j]?.toString() || ""));
             if (!combinedData[code].some(row => row.dateStr === dateStr))
               combinedData[code].push({ dateStr, scans });
@@ -1204,16 +1252,13 @@
         });
         const allEmps = [...employees, ...Object.values(discoveredEmps)];
 
-        // Auto-detect month/year from the first valid date in the CSV
+        // Auto-fill month / year / totalDays from normalised YYYY-MM-DD dates
         let detectedCfg = monthCfg;
         const allDateStrs = Object.values(combinedData).flat().map(r => r.dateStr).filter(Boolean);
         if (allDateStrs.length > 0) {
-          const sample = allDateStrs[0];
-          const parts = sample.split(sample.includes('-') ? '-' : '/');
+          const parts = allDateStrs[0].split('-'); // guaranteed YYYY-MM-DD
           if (parts.length === 3) {
-            let csvMonth, csvYear;
-            if (sample.includes('-')) { csvYear = Number(parts[0]); csvMonth = Number(parts[1]); }
-            else                       { csvYear = Number(parts[2]); csvMonth = Number(parts[1]); }
+            const csvYear = Number(parts[0]), csvMonth = Number(parts[1]);
             if (csvMonth >= 1 && csvMonth <= 12 && csvYear >= 2020) {
               const csvTotalDays = new Date(csvYear, csvMonth, 0).getDate();
               const laoLabel = `${LAO_MONTHS[csvMonth - 1]} ${csvYear}`;
