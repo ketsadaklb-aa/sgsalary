@@ -620,7 +620,7 @@
             const lastScan = lastC ? lastC[lastC.length - 1] : null;
             const parts = [];
             if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
-            if (lastScan !== null && lastScan < 1110) parts.push('ກັບໄວ');
+            if (lastScan !== null && lastScan < (emp.shift85 ? 1020 : 1110)) parts.push('ກັບໄວ');
             if (emp.scanMode === 4 && parts.length === 0) parts.push('ຊ່ວງພັກຍາວ');
             const reason = parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ';
             const deduct = Math.round(shortMins * emp.hourlyRate / 60);
@@ -823,8 +823,8 @@
                               </tr>
                             ))}
                             <tr className="border-t-2 border-rose-300">
-                              <td colSpan={3} className="py-1 font-black text-right pr-2 text-rose-700">ລວມຫັກ</td>
-                              <td className="py-1 text-right font-mono text-rose-700 font-black">({fmt(deductionRows.reduce((a, r) => a + r.deduct, 0))})</td>
+                              <td colSpan={3} className="py-1 font-black text-right pr-2 text-rose-700">ລວມຫັກທັງໝົດ</td>
+                              <td className="py-1 text-right font-mono text-rose-700 font-black">({fmt(emp.absentDeduction)})</td>
                             </tr>
                           </tbody>
                         </table>
@@ -2100,7 +2100,6 @@
                         const log = selectedEmp.dailyLog.get(day);
                         const isSun = new Date(selectedEmp.dataYear || monthCfg.year, (selectedEmp.dataMonth || monthCfg.month) - 1, day).getDay() === 0;
                         const workTime = log ? log.netM : 0;
-                        const isLongDay = workTime >= 500;
                         return (
                           <tr key={day} className={`border-b hover:bg-slate-50/50 ${isSun ? 'bg-amber-50/30' : ''} ${(!log || log.validCount === 0 || log?.countAsAbsent) && !isSun ? 'bg-rose-50/80' : ''}`}>
                             <td className="p-4 font-black">
@@ -2134,9 +2133,8 @@
                                   : log.scans.filter(s => s !== null).sort((a, b) => a - b).map(s => formatMinsToClock(s)).join(" | ")
                                 : "---"}
                             </td>
-                            <td className={`p-4 font-mono font-black ${isLongDay ? 'text-blue-600' : 'text-slate-400'}`}>
+                            <td className="p-4 font-mono font-black text-slate-600">
                               {log && log.validCount > 0 && !log.countAsAbsent ? fmtHours(minsToH(log.netM)) : "—"}
-                              {isLongDay && <span className="ml-1 text-[8px] bg-blue-100 px-1 rounded font-black">EXCEED LIMIT</span>}
                             </td>
                             <td className="p-4">
                               {(!log || log.validCount === 0) && !isSun && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
@@ -2176,7 +2174,7 @@
                           const lastScan = lastC ? lastC[lastC.length - 1] : null;
                           const parts = [];
                           if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
-                          if (lastScan !== null && lastScan < 1110) parts.push('ກັບໄວ');
+                          if (lastScan !== null && lastScan < (selectedEmp.shift85 ? 1020 : 1110)) parts.push('ກັບໄວ');
                           if (selectedEmp.scanMode === 4 && parts.length === 0) parts.push('ຊ່ວງພັກຍາວ');
                           rows.push({ day: d, reason: parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ', shortMins, deduct: Math.round(shortMins * selectedEmp.hourlyRate / 60) });
                         }
@@ -2205,7 +2203,7 @@
                             ))}
                             <tr className="border-t-2 border-rose-300">
                               <td colSpan={3} className="py-2 font-black text-right pr-3 text-rose-700">ລວມຫັກທັງໝົດ</td>
-                              <td className="py-2 text-right font-mono text-rose-700 font-black">({fmt(rows.reduce((a, r) => a + r.deduct, 0))})</td>
+                              <td className="py-2 text-right font-mono text-rose-700 font-black">({fmt(selectedEmp.absentDeduction)})</td>
                             </tr>
                           </tbody>
                         </table>
@@ -2214,8 +2212,7 @@
                   })()}
                 </div>
                 <div className="p-5 bg-slate-50 border-t flex flex-wrap gap-6 text-[9px] font-black uppercase text-slate-400 tracking-[0.1em]">
-                  <span>🔥 OT Bonus: 1M LAK (if OT &gt; 39h)</span>
-                  <span>⚡ Long Work Bonus: 1M LAK (if absent + short-hour days &lt;= 4)</span>
+                  <span>🔥 OT Bonus: 1M LAK (if OT &gt; 15h &amp;&amp; ບໍ່ຂາດ)</span>
                   <span className="flex items-center gap-1"><span className="text-emerald-600 font-black">07:30</span> = ໃຊ້ຄຳນວນ</span>
                   <span className="flex items-center gap-1"><span className="text-orange-500 font-black">14:00(x)</span> = ຍົກເວັ້ນ (ເກີນ/ຊ້ຳ)</span>
                   <span className="flex items-center gap-1"><span className="text-sky-500 font-black">~17:05(avg)</span> = ຄາດຄະເນຈາກສະເລ່ຍ</span>
