@@ -148,7 +148,7 @@
     };
 
     // ─── CALCULATIONS ─────────────────────────────────────────────────────────
-    const calcDay2Scan = (scans) => {
+    const calcDay2Scan = (scans, eveLimit = OT_EVENING) => {
       const clusters = getClusters(scans);
       if (clusters.length < 2) return null;
       const F = clusters[0][0];
@@ -156,7 +156,7 @@
       if (G <= F) return null;
       const totalM = G - F;
       const morOT = Math.max(0, OT_MORNING - F);
-      const eveOT = Math.max(0, G - OT_EVENING);
+      const eveOT = Math.max(0, G - eveLimit);
       const otM = morOT + eveOT;
       const netM = Math.max(0, totalM - BREAK_MINS - otM);
       let dayVal = 1.0;
@@ -231,9 +231,12 @@
       const EXPECTED_DAYS = RATE_DAYS - holidayMap.size;
       const OT_RATE = monthCfg.otRate;
 
-      // 2-scan: standard = 10h30m (630 min) gross span 8:00–18:30
-      // 4-scan: standard = 9h50m (590 min) net work (630 gross − 40 min lunch)
-      const standardMinsPerDay = emp.scan === 2 ? 630 : 590;
+      // 2-scan standard A: 10h30m (630 min) span 8:00–18:30
+      // 2-scan standard B: 9h00m (540 min) span 8:00–17:00 (shift85)
+      // 4-scan standard:   9h50m (590 min) net work (630 gross − 40 min lunch)
+      const is85Shift = emp.scan === 2 && emp.shift85 === true;
+      const eveLimit2Scan = is85Shift ? 17 * 60 : OT_EVENING;
+      const standardMinsPerDay = emp.scan === 4 ? 590 : is85Shift ? 540 : 630;
       // hourlyRate always based on RATE_DAYS — holidays never change the rate
       const hourlyRate = emp.base > 0 ? emp.base * 60 / (RATE_DAYS * standardMinsPerDay) : 0;
 
@@ -267,7 +270,7 @@
         const validCount = row.scans.filter(s => s !== null).length;
         if (validCount > 0) {
           const clusters = getClusters(row.scans);
-          const res = emp.scan === 2 ? calcDay2Scan(row.scans) : calcDay4Scan(row.scans);
+          const res = emp.scan === 2 ? calcDay2Scan(row.scans, eveLimit2Scan) : calcDay4Scan(row.scans);
           let warning = "";
           let usedClusterIdxs = new Set();
 
@@ -278,7 +281,7 @@
             if (avgInTime !== null && avgOutTime !== null) {
               const filledTime  = isSingleIN ? avgOutTime : avgInTime;
               const filledScans = isSingleIN ? [singleTime, avgOutTime] : [avgInTime, singleTime];
-              const filledRes   = calcDay2Scan(filledScans);
+              const filledRes   = calcDay2Scan(filledScans, eveLimit2Scan);
               if (filledRes) {
                 const noteType = isSingleIN ? 'OUT' : 'IN';
                 warning = `ສະແກນດຽວ → ໃຊ້ ${noteType} ສະເລ່ຍ [${formatMinsToClock(filledTime)}]`;
@@ -1815,6 +1818,7 @@
                           <th className="p-4">ID</th>
                           <th className="p-4 text-left">ຊື່ພະນັກງານ</th>
                           <th className="p-4 text-center text-sky-600">Scan Mode</th>
+                          <th className="p-4 text-center text-sky-600">ຊິຟ</th>
                           <th className="p-4 text-right">ຖານເງິນເດືອນ</th>
                           <th className="p-4 text-right text-purple-600">
                             <div className="flex flex-col items-end gap-1">
@@ -1854,6 +1858,15 @@
                                     {emp.scan}S
                                   </button>
                                 : <span className={`px-2 py-0.5 rounded text-[10px] font-black ${emp.scan === 2 ? 'bg-sky-100 text-sky-700' : 'bg-violet-100 text-violet-700'}`}>{emp.scan}S</span>}
+                            </td>
+                            <td className="p-4 text-center">
+                              {emp.scan === 2
+                                ? <button
+                                    onClick={() => update('shift85', !emp.shift85)}
+                                    className={`px-2 py-1 rounded text-[10px] font-black transition-all ${emp.shift85 ? 'bg-sky-500 text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
+                                    {emp.shift85 ? '8–17' : '8–18:30'}
+                                  </button>
+                                : <span className="text-slate-300 text-[10px]">—</span>}
                             </td>
                             <td className="p-4 text-right font-mono font-black text-blue-600">
                               {isEditing
