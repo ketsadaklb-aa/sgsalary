@@ -619,13 +619,24 @@
             const firstScan = clusters.length > 0 ? clusters[0][0] : null;
             const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
             const lastScan = lastC ? lastC[lastC.length - 1] : null;
-            const parts = [];
-            if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
-            if (lastScan !== null && lastScan < (emp.shift85 ? 1020 : 1110)) parts.push('ກັບໄວ');
-            if (emp.scanMode === 4 && parts.length === 0) parts.push('ຊ່ວງພັກຍາວ');
-            const reason = parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ';
-            const deduct = Math.round(shortMins * emp.hourlyRate / 60);
-            deductionRows.push({ day: d, reason, shortMins, deduct });
+            const eveLimit = emp.shift85 ? 1020 : 1110;
+            if (emp.scanMode === 4 && clusters.length >= 4) {
+              const G = clusters[1][clusters[1].length - 1];
+              const H = clusters[2][0];
+              const lunchDur = H - G;
+              const lunchExcess = Math.max(0, lunchDur - BREAK);
+              const lateMorning = firstScan !== null ? Math.max(0, firstScan - 480) : 0;
+              const earlyOut = lastScan !== null ? Math.max(0, eveLimit - lastScan) : 0;
+              if (lunchExcess > 0) deductionRows.push({ day: d, reason: `ກິນເຂົ້າສວຍເກີນເວລາ (${lunchDur}ນທ − 40ນທ)`, shortMins: lunchExcess, deduct: Math.round(lunchExcess * emp.hourlyRate / 60) });
+              if (lateMorning > 0) deductionRows.push({ day: d, reason: 'ມາຊ້າ', shortMins: lateMorning, deduct: Math.round(lateMorning * emp.hourlyRate / 60) });
+              if (earlyOut > 0) deductionRows.push({ day: d, reason: 'ກັບໄວ', shortMins: earlyOut, deduct: Math.round(earlyOut * emp.hourlyRate / 60) });
+            } else {
+              const parts = [];
+              if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
+              if (lastScan !== null && lastScan < eveLimit) parts.push('ກັບໄວ');
+              const reason = parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ';
+              deductionRows.push({ day: d, reason, shortMins, deduct: Math.round(shortMins * emp.hourlyRate / 60) });
+            }
           }
         }
       }
@@ -815,8 +826,8 @@
                             </tr>
                           </thead>
                           <tbody>
-                            {deductionRows.map(r => (
-                              <tr key={r.day} className="border-b border-rose-100">
+                            {deductionRows.map((r, i) => (
+                              <tr key={i} className="border-b border-rose-100">
                                 <td className="py-1 pr-2 font-bold">{r.day}</td>
                                 <td className="py-1 pr-2 font-bold">{r.reason}</td>
                                 <td className="py-1 pr-2 text-right font-mono">{r.shortMins}ນທ</td>
@@ -2197,11 +2208,23 @@
                           const firstScan = clusters.length > 0 ? clusters[0][0] : null;
                           const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
                           const lastScan = lastC ? lastC[lastC.length - 1] : null;
-                          const parts = [];
-                          if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
-                          if (lastScan !== null && lastScan < (selectedEmp.shift85 ? 1020 : 1110)) parts.push('ກັບໄວ');
-                          if (selectedEmp.scanMode === 4 && parts.length === 0) parts.push('ຊ່ວງພັກຍາວ');
-                          rows.push({ day: d, reason: parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ', shortMins, deduct: Math.round(shortMins * selectedEmp.hourlyRate / 60) });
+                          const eveLimit = selectedEmp.shift85 ? 1020 : 1110;
+                          if (selectedEmp.scanMode === 4 && clusters.length >= 4) {
+                            const G = clusters[1][clusters[1].length - 1];
+                            const H = clusters[2][0];
+                            const lunchDur = H - G;
+                            const lunchExcess = Math.max(0, lunchDur - BREAK);
+                            const lateMorning = firstScan !== null ? Math.max(0, firstScan - 480) : 0;
+                            const earlyOut = lastScan !== null ? Math.max(0, eveLimit - lastScan) : 0;
+                            if (lunchExcess > 0) rows.push({ day: d, reason: `ກິນເຂົ້າສວຍເກີນເວລາ (${lunchDur}ນທ − 40ນທ)`, shortMins: lunchExcess, deduct: Math.round(lunchExcess * selectedEmp.hourlyRate / 60) });
+                            if (lateMorning > 0) rows.push({ day: d, reason: 'ມາຊ້າ', shortMins: lateMorning, deduct: Math.round(lateMorning * selectedEmp.hourlyRate / 60) });
+                            if (earlyOut > 0) rows.push({ day: d, reason: 'ກັບໄວ', shortMins: earlyOut, deduct: Math.round(earlyOut * selectedEmp.hourlyRate / 60) });
+                          } else {
+                            const parts = [];
+                            if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
+                            if (lastScan !== null && lastScan < eveLimit) parts.push('ກັບໄວ');
+                            rows.push({ day: d, reason: parts.length > 0 ? parts.join(' + ') : 'ໜ້ອຍກວ່າມາດຕະຖານ', shortMins, deduct: Math.round(shortMins * selectedEmp.hourlyRate / 60) });
+                          }
                         }
                       }
                     }
@@ -2218,8 +2241,8 @@
                             </tr>
                           </thead>
                           <tbody>
-                            {rows.map(r => (
-                              <tr key={r.day} className="border-b border-rose-100">
+                            {rows.map((r, i) => (
+                              <tr key={i} className="border-b border-rose-100">
                                 <td className="py-1.5 pr-3 font-bold">{r.day}</td>
                                 <td className="py-1.5 pr-3 font-bold">{r.reason}</td>
                                 <td className="py-1.5 pr-3 text-right font-mono">{r.shortMins}ນທ</td>
