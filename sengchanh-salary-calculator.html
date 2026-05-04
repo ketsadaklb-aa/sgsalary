@@ -779,36 +779,22 @@
                 <div className="mb-6">
                   <h3 className="font-black text-sm uppercase tracking-widest text-slate-500 border-b pb-2 mb-3">ລາຍຮັບ</h3>
                   <div className="space-y-1">
-                    {/* 1. Base salary reference */}
+                    {/* 1. Base salary */}
                     <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
                       <div>
                         <p className="font-black">ຖານເງິນເດືອນ</p>
-                        <p className="text-[10px] text-slate-400 font-bold">
-                          {fmt(emp.base)} ÷ {emp.rateDays} ວັນ ÷ {fmtHours(emp.standardMinsPerDay / 60)} = {fmt(Math.round(emp.hourlyRate))} ກີບ/ຊມ
-                        </p>
+                        <p className="text-[10px] text-slate-400 font-bold">{emp.rateDays} ວັນ × {fmtHours(emp.standardMinsPerDay / 60)}</p>
                       </div>
                       <span className="font-black text-slate-900">{fmt(emp.base)}</span>
                     </div>
-                    {/* 2. Actual hours pay */}
-                    <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
-                      <div>
-                        <p className="font-black">ຄ່າແຮງຕົວຈິງ</p>
-                        <p className="text-[10px] text-slate-400 font-bold">
-                          {fmtHours(emp.totalPayMins / 60)} ຊມ × {fmt(Math.round(emp.hourlyRate))} ກີບ/ຊມ
-                        </p>
-                      </div>
-                      <span className="font-black text-slate-900">{fmt(emp.rawWorkPay)}</span>
-                    </div>
-                    {/* 3. Absent penalty (×2 rule extra deduction) */}
-                    {emp.absent > 0 && (
+                    {/* 2. Total deduction from base (short hours + absent penalty combined) */}
+                    {emp.absentDeduction > 0 && (
                       <div className="flex justify-between items-start text-sm py-2 border-b border-slate-100">
                         <div>
                           <p className="font-black text-rose-600">ຮັບໜ້ອຍກວ່າຖານ</p>
-                          <p className="text-[10px] text-rose-400 font-bold">
-                            {emp.absent} ວັນ × {fmt(emp.dailyRateKip)} ກີບ/ວັນ — ຂາດ 1 ວັນ ຫັກ 2 ວັນ
-                          </p>
+                          <p className="text-[10px] text-rose-400 font-bold">ຂາດ/ສັ້ນ {emp.absent > 0 ? `${emp.absent} ວັນ` : ''} — ເບິ່ງລາຍລະອຽດດ້ານລຸ່ມ</p>
                         </div>
-                        <span className="font-black text-rose-600">−{fmt(emp.absentPenalty)}</span>
+                        <span className="font-black text-rose-600">−{fmt(emp.absentDeduction)}</span>
                       </div>
                     )}
                     {/* Deduction breakdown table */}
@@ -841,11 +827,11 @@
                         </table>
                       </div>
                     )}
-                    {/* 4. Subtotal before OT / bonus / advance */}
+                    {/* 3. Subtotal before OT / bonus / advance */}
                     <div className="flex justify-between items-center py-2.5 px-3 my-2 bg-slate-100 rounded-xl border border-slate-200">
                       <div>
                         <p className="font-black text-slate-700 text-sm">ຍອດເຫລືອ (ກ່ອນ OT / ໂບນັດ / ຫັກ)</p>
-                        <p className="text-[10px] text-slate-400 font-bold">ຄ່າແຮງຕົວຈິງ{emp.absent > 0 ? ' − ຮັບໜ້ອຍກວ່າຖານ' : ''}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">{fmt(emp.base)}{emp.absentDeduction > 0 ? ` − ${fmt(emp.absentDeduction)}` : ' (ເຕັມ)'}</p>
                       </div>
                       <span className="font-black text-slate-900 text-base">{fmt(emp.workPay)} ກີບ</span>
                     </div>
