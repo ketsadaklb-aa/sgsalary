@@ -290,10 +290,10 @@
                 if (info.isSunday) {
                   // Sunday attendance tracked but no pay adjustment
                 } else if (holidayMap.has(info.day)) {
-                  otH += filledRes.otH;
+                  if (!emp.no_ot) otH += filledRes.otH;
                 } else {
                   attendedDays += filledRes.dayVal;
-                  otH += filledRes.otH;
+                  if (!emp.no_ot) otH += filledRes.otH;
                   const payMins2 = Math.min(filledRes.netM + BREAK_MINS, standardMinsPerDay);
                   totalPayMins += payMins2;
 
@@ -374,10 +374,10 @@
               // Sunday attendance
             } else if (holidayMap.has(info.day)) {
               // Holiday: still track OT if they came in, but base pay handled via credit below
-              otH += effectiveRes.otH;
+              if (!emp.no_ot) otH += effectiveRes.otH;
             } else {
               attendedDays += effectiveRes.dayVal;
-              otH += effectiveRes.otH;
+              if (!emp.no_ot) otH += effectiveRes.otH;
               // Hourly pay: capped at standardMinsPerDay so OT never compensates for absent days
               const payMins = Math.min(emp.scan === 2 ? effectiveRes.netM + BREAK_MINS : effectiveRes.netM, standardMinsPerDay);
               totalPayMins += payMins;
@@ -414,8 +414,9 @@
       const absentPenalty = absentDates.length * dailyRateKip;
       const workPay = Math.max(0, rawWorkPay - absentPenalty);
       const absentDeduction = Math.round(basePay - workPay);
-      const otPay = otH * OT_RATE;
-      const otBonus = (emp.ot_bonus_enabled !== false) && otH > 15 && absentDates.length === 0 ? 1000000 : 0;
+      const qualifiesForBonus = !emp.no_ot && (emp.ot_bonus_enabled !== false) && otH >= 15 && absentDates.length === 0;
+      const otPay = qualifiesForBonus ? 0 : otH * OT_RATE;
+      const otBonus = qualifiesForBonus ? 1000000 : 0;
       const totalGross = workPay + otPay + (emp.special_bonus || 0) + otBonus;
       const netPay = totalGross - (emp.advance || 0);
 
@@ -1832,6 +1833,7 @@
                               <button onClick={() => setShowConfirm('advance')} className="bg-rose-600 text-white text-[9px] px-2 py-0.5 rounded shadow hover:bg-rose-700 active:scale-95 transition-all">RESET ALL</button>
                             </div>
                           </th>
+                          <th className="p-4 text-center text-orange-500">OT ນອກ</th>
                           <th className="p-4 text-center text-emerald-600">ໂບນັດ OT</th>
                           <th className="p-4 text-center text-blue-600">ເພີ່ມຄືນ (ຊມ)</th>
                           <th className="p-4 text-left text-blue-600">ເຫດຜົນ</th>
@@ -1884,9 +1886,15 @@
                                 : (emp.advance || 0).toLocaleString()}
                             </td>
                             <td className="p-4 text-center">
-                              <button onClick={() => update('ot_bonus_enabled', emp.ot_bonus_enabled === false ? true : false)}
-                                className={`px-4 py-1 rounded-lg text-[10px] font-bold transition-all ${emp.ot_bonus_enabled !== false ? 'bg-emerald-500 text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
-                                {emp.ot_bonus_enabled !== false ? 'ເປີດ' : 'ປິດ'}
+                              <button onClick={() => update('no_ot', !emp.no_ot)}
+                                className={`px-4 py-1 rounded-lg text-[10px] font-bold transition-all ${emp.no_ot ? 'bg-slate-200 text-slate-500' : 'bg-orange-500 text-white shadow-md'}`}>
+                                {emp.no_ot ? 'ປິດ' : 'ເປີດ'}
+                              </button>
+                            </td>
+                            <td className="p-4 text-center">
+                              <button onClick={() => { if (!emp.no_ot) update('ot_bonus_enabled', emp.ot_bonus_enabled === false ? true : false); }}
+                                className={`px-4 py-1 rounded-lg text-[10px] font-bold transition-all ${emp.no_ot ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : emp.ot_bonus_enabled !== false ? 'bg-emerald-500 text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
+                                {emp.no_ot ? '—' : emp.ot_bonus_enabled !== false ? 'ເປີດ' : 'ປິດ'}
                               </button>
                             </td>
                             <td className="p-4 text-center font-mono font-black text-blue-600">
