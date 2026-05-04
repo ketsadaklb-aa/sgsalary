@@ -887,8 +887,11 @@
                     <span className="font-black text-lg">{fmt(emp.totalGross)} ກີບ</span>
                   </div>
                   {(emp.advance || 0) > 0 && (
-                    <div className="flex justify-between text-sm py-2 border-t border-slate-200">
-                      <span className="font-bold text-rose-600">ຫັກເງິນເບີກ</span>
+                    <div className="flex justify-between items-start text-sm py-2 border-t border-slate-200">
+                      <div>
+                        <p className="font-bold text-rose-600">ຫັກເງິນເບີກ</p>
+                        {emp.advance_note && <p className="text-[10px] text-rose-400 font-bold">{emp.advance_note}</p>}
+                      </div>
                       <span className="font-black text-rose-600">({fmt(emp.advance)}) ກີບ</span>
                     </div>
                   )}
@@ -1438,7 +1441,7 @@
         otBonus: acc.otBonus + r.otBonus,
       }), { totalGross:0, advance:0, netPay:0, workPay:0, otPay:0, specialBonus:0, otBonus:0 });
 
-      const resetAllAdvances = () => { setEmployees(employees.map(e => ({ ...e, advance: 0 }))); setShowConfirm(null); };
+      const resetAllAdvances = () => { setEmployees(employees.map(e => ({ ...e, advance: 0, advance_note: '' }))); setShowConfirm(null); };
       const resetAllSpecialBonuses = () => { setEmployees(employees.map(e => ({ ...e, special_bonus: 0 }))); setShowConfirm(null); };
 
       const generateBulkPDF = async () => {
@@ -1882,8 +1885,14 @@
                             </td>
                             <td className="p-4 text-right font-mono font-black text-rose-600">
                               {isEditing
-                                ? <NumericInput className="p-1 border-2 border-rose-200 rounded w-32 text-right outline-none" value={emp.advance} onChange={val => update('advance', val)} />
-                                : (emp.advance || 0).toLocaleString()}
+                                ? <div className="flex flex-col gap-1 items-end">
+                                    <NumericInput className="p-1 border-2 border-rose-200 rounded w-32 text-right outline-none" value={emp.advance} onChange={val => update('advance', val)} />
+                                    <input type="text" placeholder="ເຫດຜົນ..." className="p-1 border border-rose-200 rounded w-32 text-right text-[10px] font-normal outline-none text-slate-600" value={emp.advance_note || ''} onChange={e => update('advance_note', e.target.value)} />
+                                  </div>
+                                : <div>
+                                    <div>{(emp.advance || 0).toLocaleString()}</div>
+                                    {emp.advance_note && <div className="text-[9px] font-normal text-rose-400">{emp.advance_note}</div>}
+                                  </div>}
                             </td>
                             <td className="p-4 text-center">
                               <button onClick={() => update('no_ot', !emp.no_ot)}
@@ -2039,7 +2048,9 @@
                           <td className="px-3 py-2 text-right font-black font-mono text-purple-600 border-r">{r.otPay > 0 ? fmt(r.otPay) : "—"}</td>
                           <td className="px-3 py-2 text-right font-black font-mono text-purple-700 border-r">{(r.special_bonus || 0) > 0 ? fmt(r.special_bonus) : "—"}</td>
                           {anyOtBonus && <td className={`px-3 py-2 text-right font-black font-mono border-r ${r.ot_bonus_enabled === false ? 'bg-slate-100/60' : 'text-emerald-600'}`}>{r.ot_bonus_enabled !== false ? (r.otBonus > 0 ? fmt(r.otBonus) : "—") : ""}</td>}
-                          <td className="px-3 py-2 text-right font-black font-mono text-rose-600 border-r bg-rose-50/20">{(r.advance || 0) > 0 ? `(${fmt(r.advance)})` : "—"}</td>
+                          <td className="px-3 py-2 text-right font-black font-mono text-rose-600 border-r bg-rose-50/20">
+                            {(r.advance || 0) > 0 ? <div><div>({fmt(r.advance)})</div>{r.advance_note && <div className="text-[8px] font-normal text-rose-400">{r.advance_note}</div>}</div> : "—"}
+                          </td>
                           <td className={`px-4 py-2 text-right font-black text-[13px] bg-slate-50 group-hover:bg-blue-50 transition-colors font-mono ${r.netPay < 0 ? 'text-rose-600' : 'text-blue-800'}`}>{fmt(r.netPay)}</td>
                           <td className="px-3 py-2 text-center bg-slate-700/5">
                             <button onClick={() => setSlipEmp(r)} title="ສ້າງໃບແຈ້ງເງິນເດືອນ"
