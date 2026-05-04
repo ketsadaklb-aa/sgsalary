@@ -1075,6 +1075,7 @@
       const [sessions, setSessions] = useState(loadSessions);
       const [showSaveSession, setShowSaveSession] = useState(false);
       const [sessionName, setSessionName] = useState("");
+      const [saveConflict, setSaveConflict] = useState(null); // existing session that matches current month
       const fileRef = useRef();
       const combinedDataRef = useRef(null);
       const initialLoadDone = useRef(false);
@@ -1248,9 +1249,21 @@
         setTab("results");
       }, [employees, monthCfg]);
 
-      const saveCurrentSession = async () => {
+      const handleSaveClick = () => {
         if (!combinedDataRef.current) return;
-        const label = sessionName.trim() || monthCfg.label;
+        const existing = sessions.find(s => s.label === monthCfg.label);
+        if (existing) {
+          setSaveConflict(existing); // show replace/new modal
+        } else {
+          saveCurrentSession(null); // save directly, no modal
+        }
+      };
+
+      const saveCurrentSession = async (replaceId) => {
+        if (!combinedDataRef.current) return;
+        // If replacing, delete the old session first
+        if (replaceId) await apiCall('DELETE', `/api/sessions/${replaceId}`);
+        const label = monthCfg.label;
         const newSession = {
           id: Date.now(), label, monthCfg,
           scanData: combinedDataRef.current, employees,
@@ -1261,11 +1274,13 @@
         };
         await apiCall('POST', '/api/sessions', newSession);
         const r = await apiCall('GET', '/api/sessions');
-        const updated = r.ok && r.data ? r.data : [newSession, ...sessions];
+        const base = replaceId ? sessions.filter(s => s.id !== replaceId) : sessions;
+        const updated = r.ok && r.data ? r.data : [newSession, ...base];
         setSessions(updated);
         saveSessions(updated);
+        setSaveConflict(null);
         setShowSaveSession(false);
-        setSessionName("");
+        setStatus(`✅ Save ສຳເລັດ — ${label}`);
       };
 
       const exportSessions = () => {
@@ -1551,7 +1566,7 @@
                       <p className="text-blue-500 text-xs font-bold mt-0.5">{monthCfg.label} — {results ? Object.keys(results).length : 0} ຄົນ</p>
                     </div>
                     <div className="flex gap-2 flex-shrink-0">
-                      <button onClick={() => setShowSaveSession(true)}
+                      <button onClick={handleSaveClick}
                         className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-black px-4 py-2 rounded-xl shadow transition-all active:scale-95">
                         💾 Save Session
                       </button>
@@ -2233,36 +2248,21 @@
             );
           })()}
 
-          {/* SAVE SESSION MODAL */}
-          {showSaveSession && (() => {
-            const resolvedLabel = sessionName.trim() || monthCfg.label;
-            const isDuplicate = sessions.some(s => s.label === resolvedLabel);
-            return (
+          {/* SAVE CONFLICT MODAL */}
+          {saveConflict && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in">
               <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl border border-slate-100 text-center">
-                <div className="w-16 h-16 rounded-full bg-blue-100 text-blue-600 mx-auto flex items-center justify-center mb-4 text-2xl">💾</div>
-                <h3 className="text-xl font-black mb-2 uppercase">Save Session</h3>
-                <p className="text-slate-500 font-bold text-sm mb-4">ຕັ້ງຊື່ session ນີ້</p>
-                <input
-                  className="w-full p-3 border-2 border-blue-200 rounded-xl font-bold text-center outline-none focus:border-blue-500"
-                  placeholder={monthCfg.label}
-                  value={sessionName}
-                  onChange={e => setSessionName(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && saveCurrentSession()}
-                  autoFocus
-                />
-                {isDuplicate && (
-                  <p className="text-amber-600 font-bold text-xs mt-2 mb-2">⚠️ ມີ session ຊື່ "{resolvedLabel}" ຢູ່ແລ້ວ — ຈະ save ເປັນລາຍການໃໝ່ທີ່ຊ້ຳ</p>
-                )}
-                {!isDuplicate && <div className="mb-6" />}
-                <div className="flex gap-3">
-                  <button onClick={() => { setShowSaveSession(false); setSessionName(""); }} className="flex-1 py-3 bg-slate-100 text-slate-600 font-black rounded-2xl hover:bg-slate-200 transition-all">ຍົກເລີກ</button>
-                  <button onClick={saveCurrentSession} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95">💾 Save</button>
+                <div className="text-4xl mb-4">💾</div>
+                <h3 className="text-xl font-black mb-2">ມີຂໍ້ມູນ "{saveConflict.label}" ຢູ່ແລ້ວ</h3>
+                <p className="text-slate-500 font-bold text-sm mb-6">ທ່ານຕ້ອງການເຮັດຫຍັງ?</p>
+                <div className="space-y-3">
+                  <button onClick={() => saveCurrentSession(saveConflict.id)} className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-2xl transition-all active:scale-95">🔄 ແທນທີ່ — Replace "{saveConflict.label}"</button>
+                  <button onClick={() => saveCurrentSession(null)} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl transition-all active:scale-95">➕ Save ໃໝ່ — Keep Both</button>
+                  <button onClick={() => setSaveConflict(null)} className="w-full py-3 bg-slate-100 text-slate-600 font-black rounded-2xl hover:bg-slate-200 transition-all">ຍົກເລີກ</button>
                 </div>
               </div>
             </div>
-            );
-          })()}
+          )}
 
           {/* RESET / DELETE CONFIRMATION */}
           {showConfirm && (
