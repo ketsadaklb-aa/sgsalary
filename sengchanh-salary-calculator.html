@@ -2080,7 +2080,7 @@
                 <div className="p-8 bg-slate-900 text-white flex justify-between items-center">
                   <div>
                     <h2 className="text-2xl font-black">{selectedEmp.name}</h2>
-                    <p className="text-blue-300 text-xs font-bold uppercase tracking-widest">Raw Data Check — Mode: {selectedEmp.scanMode}-Scan</p>
+                    <p className="text-blue-300 text-xs font-bold uppercase tracking-widest">Raw Data Check — {selectedEmp.scanMode}-Scan{selectedEmp.shift85 ? ' (8–17)' : selectedEmp.scanMode === 2 ? ' (8–18:30)' : ''}</p>
                   </div>
                   <button onClick={() => setSelectedEmp(null)} className="text-3xl hover:scale-110 transition-transform bg-white/10 w-12 h-12 rounded-full flex items-center justify-center">✕</button>
                 </div>
@@ -2090,7 +2090,7 @@
                       <tr>
                         <th className="p-4 border-b">Date</th>
                         <th className="p-4 border-b">Raw Logs</th>
-                        <th className="p-4 border-b">Work (no OT)</th>
+                        <th className="p-4 border-b">ເວລາສຸດທິ</th>
                         <th className="p-4 border-b">Status</th>
                         <th className="p-4 border-b text-center">Val</th>
                       </tr>
@@ -2099,11 +2099,16 @@
                       {Array.from({ length: selectedEmp.dataTotalDays || monthCfg.totalDays }, (_, i) => i + 1).map(day => {
                         const log = selectedEmp.dailyLog.get(day);
                         const isSun = new Date(selectedEmp.dataYear || monthCfg.year, (selectedEmp.dataMonth || monthCfg.month) - 1, day).getDay() === 0;
-                        const workTime = log ? log.netM : 0;
+                        const holidayEntry = (monthCfg.holidays || []).find(h => (typeof h === 'object' ? Number(h.date) : Number(h)) === day);
+                        const isHoliday = !!holidayEntry && !isSun;
+                        const holidayName = isHoliday && typeof holidayEntry === 'object' && holidayEntry.name ? holidayEntry.name : 'ວັນພັກ';
+                        const isDayOff = isSun || isHoliday;
                         return (
-                          <tr key={day} className={`border-b hover:bg-slate-50/50 ${isSun ? 'bg-amber-50/30' : ''} ${(!log || log.validCount === 0 || log?.countAsAbsent) && !isSun ? 'bg-rose-50/80' : ''}`}>
+                          <tr key={day} className={`border-b hover:bg-slate-50/50 ${isSun ? 'bg-amber-50/30' : ''} ${isHoliday ? 'bg-blue-50/40' : ''} ${(!log || log.validCount === 0 || log?.countAsAbsent) && !isDayOff ? 'bg-rose-50/80' : ''}`}>
                             <td className="p-4 font-black">
-                              {day}{getOrdinal(day)} {isSun && <span className="text-amber-600 font-bold ml-1 text-[9px] uppercase">Sunday</span>}
+                              {day}{getOrdinal(day)}
+                              {isSun && <span className="text-amber-500 font-bold ml-1 text-[9px] uppercase">ວັນອາທິດ</span>}
+                              {isHoliday && <span className="text-blue-500 font-bold ml-1 text-[9px] uppercase">ພັກ</span>}
                             </td>
                             <td className="p-4 font-mono font-black text-[10px]">
                               {log && log.validCount > 0
@@ -2137,13 +2142,14 @@
                               {log && log.validCount > 0 && !log.countAsAbsent ? fmtHours(minsToH(log.netM)) : "—"}
                             </td>
                             <td className="p-4">
-                              {(!log || log.validCount === 0) && !isSun && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
+                              {(!log || log.validCount === 0) && !isDayOff && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
                               {log?.countAsAbsent && <span className="bg-rose-500 text-white px-2 py-0.5 rounded-lg font-black text-[9px]">ສະແກນດຽວ — ຂາດ</span>}
                               {log?.warning && !log.countAsAbsent && <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] border ${log.warning.includes('0.5') ? 'bg-blue-100 text-blue-700 border-blue-200' : (log.filledScan || log.filledScan4) ? 'bg-sky-100 text-sky-700 border-sky-200' : 'bg-amber-100 text-amber-700 border-amber-200'}`}>{log.warning}</span>}
-                              {log && log.validCount > 0 && !log.warning && !isSun && <span className="text-emerald-600 font-black text-[9px]">✅ OK</span>}
-                              {isSun && <span className="text-slate-400 italic text-[9px]">Holiday</span>}
+                              {log && log.validCount > 0 && !log.warning && !isDayOff && <span className="text-emerald-600 font-black text-[9px]">✅ OK</span>}
+                              {isSun && <span className="text-amber-500 font-black text-[9px]">ວັນອາທິດ</span>}
+                              {isHoliday && <span className="text-blue-600 font-black text-[9px]">{holidayName}</span>}
                             </td>
-                            <td className="p-4 text-center font-black text-purple-600 font-mono">{log ? log.dayVal.toFixed(1) : 0}</td>
+                            <td className="p-4 text-center font-black text-purple-600 font-mono">{isDayOff ? '—' : log ? log.dayVal.toFixed(1) : '0'}</td>
                           </tr>
                         );
                       })}
