@@ -133,7 +133,7 @@
     const fmt = (n) => Math.round(n).toLocaleString();
 
     const getClusters = (scans, threshold = 15) => {
-      const sorted = scans.filter(s => s !== null).sort((a, b) => a - b);
+      const sorted = scans.filter(s => typeof s === 'number' && isFinite(s)).sort((a, b) => a - b);
       if (sorted.length === 0) return [];
       const clusters = [[sorted[0]]];
       for (let i = 1; i < sorted.length; i++) {
@@ -206,7 +206,7 @@
         }
         const I = sorted[sorted.length - 1];
         otH = minsToH(Math.max(0, OT_MORNING - F) + Math.max(0, I - OT_EVENING));
-        const netM = (G - Math.max(F, OT_MORNING)) + (Math.min(I, OT_EVENING) - H);
+        const netM = Math.max(0, G - Math.max(F, OT_MORNING)) + Math.max(0, Math.min(I, OT_EVENING) - H);
         return { otH, netM, dayVal: 1.0, isHalfDay: false, resolvedG: G, resolvedH: H, ignoredScanVals };
       }
       // No lunch gap detected — fall back to cluster-based approach
@@ -215,7 +215,7 @@
         const F = clusters[0][0]; const G = clusters[1][clusters[1].length - 1];
         const H = clusters[clusters.length - 2][0]; const I = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
         otH = minsToH(Math.max(0, OT_MORNING - F) + Math.max(0, I - OT_EVENING));
-        const netM = (G - Math.max(F, OT_MORNING)) + (Math.min(I, OT_EVENING) - H);
+        const netM = Math.max(0, G - Math.max(F, OT_MORNING)) + Math.max(0, Math.min(I, OT_EVENING) - H);
         return { otH, netM, dayVal: 1.0, isHalfDay: false, resolvedG: G, resolvedH: H };
       } else {
         otH = minsToH(Math.max(0, OT_MORNING - firstScan) + Math.max(0, lastScan - OT_EVENING));
@@ -281,16 +281,16 @@
         }
       } else if (emp.scan === 4) {
         const complete4 = dailyRows.filter(r => {
-          const s = r.scans.filter(x => x !== null).sort((a, b) => a - b);
+          const s = r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b);
           const li = findLunchPair(s);
           return li !== null && li + 1 < s.length - 1;
         });
         if (complete4.length > 0) {
           const avg = (arr) => Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
-          avg4InAM  = avg(complete4.map(r => r.scans.filter(x => x !== null).sort((a, b) => a - b)[0]));
-          avg4OutAM = avg(complete4.map(r => { const s = r.scans.filter(x => x !== null).sort((a, b) => a - b); return s[findLunchPair(s)]; }));
-          avg4InPM  = avg(complete4.map(r => { const s = r.scans.filter(x => x !== null).sort((a, b) => a - b); return s[findLunchPair(s) + 1]; }));
-          avg4OutPM = avg(complete4.map(r => r.scans.filter(x => x !== null).sort((a, b) => a - b).slice(-1)[0]));
+          avg4InAM  = avg(complete4.map(r => r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b)[0]));
+          avg4OutAM = avg(complete4.map(r => { const s = r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b); return s[findLunchPair(s)]; }));
+          avg4InPM  = avg(complete4.map(r => { const s = r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b); return s[findLunchPair(s) + 1]; }));
+          avg4OutPM = avg(complete4.map(r => r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b).slice(-1)[0]));
         }
       }
 
@@ -347,7 +347,7 @@
               usedClusterIdxs.add(clusters.length - 1);
             } else if (effectiveCount < emp.scan) {
               // Try to fill missing 4-scan data with monthly averages
-              if (emp.scan === 4 && avg4InAM !== null) {
+              if (emp.scan === 4 && avg4InAM !== null && Number.isFinite(avg4InAM) && Number.isFinite(avg4OutPM)) {
                 const n = effectiveCount;
                 let filledTimes = null, entries = [];
                 if (n === 3) {
