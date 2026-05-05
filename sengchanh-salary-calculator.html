@@ -180,7 +180,7 @@
     };
 
     const calcDay4Scan = (scans) => {
-      const sorted = scans.filter(s => s !== null).sort((a, b) => a - b);
+      const sorted = scans.filter(s => typeof s === 'number' && isFinite(s)).sort((a, b) => a - b);
       if (sorted.length === 0) return null;
       const firstScan = sorted[0], lastScan = sorted[sorted.length - 1];
       let otH = 0;
@@ -254,7 +254,7 @@
       const RATE_DAYS = dataTotalDays - _sundays;
       // EXPECTED_DAYS: days employee is expected to attend (all holidays reduce this)
       const EXPECTED_DAYS = RATE_DAYS - holidayMap.size;
-      const OT_RATE = monthCfg.otRate;
+      const OT_RATE = monthCfg.otRate || 0;
 
       // 2-scan standard A: 10h30m (630 min) span 8:00–18:30
       // 2-scan standard B: 9h00m (540 min) span 8:00–17:00 (shift85)
@@ -296,7 +296,7 @@
 
       for (const row of dailyRows) {
         const info = getDayInfo(row.dateStr);
-        const validCount = row.scans.filter(s => s !== null).length;
+        const validCount = row.scans.filter(s => typeof s === 'number' && isFinite(s)).length;
         if (validCount > 0) {
           const clusters = getClusters(row.scans);
           const res = emp.scan === 2 ? calcDay2Scan(row.scans, eveLimit2Scan) : calcDay4Scan(row.scans);
@@ -307,7 +307,7 @@
             // 2-scan with only 1 cluster — try to fill missing scan with monthly average
             const singleTime = clusters[0][0];
             const isSingleIN = singleTime < MID_DAY;
-            if (avgInTime !== null && avgOutTime !== null) {
+            if (avgInTime !== null && avgOutTime !== null && Number.isFinite(avgInTime) && Number.isFinite(avgOutTime)) {
               const filledTime  = isSingleIN ? avgOutTime : avgInTime;
               const filledScans = isSingleIN ? [singleTime, avgOutTime] : [avgInTime, singleTime];
               const filledRes   = calcDay2Scan(filledScans, eveLimit2Scan);
@@ -2200,7 +2200,7 @@
                                         </span>
                                       ))}
                                     </>
-                                  : log.scans.filter(s => s !== null).sort((a, b) => a - b).map(s => formatMinsToClock(s)).join(" | ")
+                                  : log.scans.filter(s => typeof s === 'number' && isFinite(s)).sort((a, b) => a - b).map(s => formatMinsToClock(s)).join(" | ")
                                 : "---"}
                             </td>
                             <td className="p-4 font-mono font-black text-slate-600">
