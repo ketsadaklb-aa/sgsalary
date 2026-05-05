@@ -147,6 +147,21 @@
       return clusters;
     };
 
+    // ─── LUNCH GAP DETECTION ────────────────────────────────────────────────────
+    const findLunchPair = (sortedScans) => {
+      // Find adjacent pair (gap 25–180 min) with midpoint closest to noon (12:30 = 750)
+      const NOON = 750;
+      let bestIdx = null, bestDist = Infinity;
+      for (let i = 0; i < sortedScans.length - 1; i++) {
+        const gap = sortedScans[i + 1] - sortedScans[i];
+        if (gap >= 25 && gap <= 180) {
+          const dist = Math.abs((sortedScans[i] + sortedScans[i + 1]) / 2 - NOON);
+          if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        }
+      }
+      return bestIdx; // index of OUT_AM scan; IN_PM is at bestIdx+1; null if no lunch gap found
+    };
+
     // ─── CALCULATIONS ─────────────────────────────────────────────────────────
     const calcDay2Scan = (scans, eveLimit = OT_EVENING) => {
       const clusters = getClusters(scans);
@@ -165,38 +180,48 @@
     };
 
     const calcDay4Scan = (scans) => {
-      const clusters = getClusters(scans);
-      if (clusters.length < 1) return null;
-      const firstScan = clusters[0][0];
-      const lastScan = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
-      let dayVal = 0, netM = 0, otH = 0, isHalfDay = false;
+      const sorted = scans.filter(s => s !== null).sort((a, b) => a - b);
+      if (sorted.length === 0) return null;
+      const firstScan = sorted[0], lastScan = sorted[sorted.length - 1];
+      let otH = 0;
+      // Half-day: only morning or only afternoon
       if (lastScan < MID_DAY - 30) {
-        const F = clusters[0][0], G = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
-        netM = Math.max(0, G - Math.max(F, OT_MORNING)); dayVal = 0.5; isHalfDay = true;
+        const netM = Math.max(0, lastScan - Math.max(firstScan, OT_MORNING));
+        return { otH, netM, dayVal: 0.5, isHalfDay: true };
       } else if (firstScan >= MID_DAY - 15) {
-        const H = clusters[0][0], I = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
-        netM = Math.max(0, Math.min(I, OT_EVENING) - H); dayVal = 0.5; isHalfDay = true;
-      } else {
-        let F, G, H, I;
-        if (clusters.length >= 4) {
-          F = clusters[0][0]; G = clusters[1][clusters[1].length - 1];
-          H = clusters[clusters.length - 2][0]; I = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
-          netM = (G - F) + (I - H);
-        } else {
-          F = firstScan; I = lastScan; netM = I - F - BREAK_MINS;
-        }
-        dayVal = 1.0;
-        const morOT = Math.max(0, OT_MORNING - F);
-        const eveOT = Math.max(0, I - OT_EVENING);
-        otH = minsToH(morOT + eveOT);
-        // recalculate netM excluding OT periods (cap F at 8AM, I at 6:30PM)
-        if (clusters.length >= 4) {
-          netM = (G - Math.max(F, OT_MORNING)) + (Math.min(I, OT_EVENING) - H);
-        } else {
-          netM = Math.min(I, OT_EVENING) - Math.max(F, OT_MORNING) - BREAK_MINS;
-        }
+        const netM = Math.max(0, Math.min(lastScan, OT_EVENING) - firstScan);
+        return { otH, netM, dayVal: 0.5, isHalfDay: true };
       }
-      return { otH, netM, dayVal, isHalfDay };
+      // Lunch gap detection: find adjacent pair closest to noon
+      const lunchIdx = findLunchPair(sorted);
+      if (lunchIdx !== null) {
+        const F = sorted[0], G = sorted[lunchIdx], H = sorted[lunchIdx + 1];
+        const hasOutPM = lunchIdx + 1 < sorted.length - 1;
+        const usedSet = new Set([0, lunchIdx, lunchIdx + 1, ...(hasOutPM ? [sorted.length - 1] : [])]);
+        const ignoredScanVals = new Set(sorted.filter((_, i) => !usedSet.has(i)));
+        if (!hasOutPM) {
+          // Only 3 effective scans — OUT_PM missing; signal for fill logic
+          return { otH: 0, netM: 0, dayVal: 1.0, isHalfDay: false,
+                   effectiveScanCount: 3, resolvedF: F, resolvedG: G, resolvedH: H, ignoredScanVals };
+        }
+        const I = sorted[sorted.length - 1];
+        otH = minsToH(Math.max(0, OT_MORNING - F) + Math.max(0, I - OT_EVENING));
+        const netM = (G - Math.max(F, OT_MORNING)) + (Math.min(I, OT_EVENING) - H);
+        return { otH, netM, dayVal: 1.0, isHalfDay: false, resolvedG: G, resolvedH: H, ignoredScanVals };
+      }
+      // No lunch gap detected — fall back to cluster-based approach
+      const clusters = getClusters(scans);
+      if (clusters.length >= 4) {
+        const F = clusters[0][0]; const G = clusters[1][clusters[1].length - 1];
+        const H = clusters[clusters.length - 2][0]; const I = clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1];
+        otH = minsToH(Math.max(0, OT_MORNING - F) + Math.max(0, I - OT_EVENING));
+        const netM = (G - Math.max(F, OT_MORNING)) + (Math.min(I, OT_EVENING) - H);
+        return { otH, netM, dayVal: 1.0, isHalfDay: false, resolvedG: G, resolvedH: H };
+      } else {
+        otH = minsToH(Math.max(0, OT_MORNING - firstScan) + Math.max(0, lastScan - OT_EVENING));
+        const netM = Math.min(lastScan, OT_EVENING) - Math.max(firstScan, OT_MORNING) - BREAK_MINS;
+        return { otH, netM, dayVal: 1.0, isHalfDay: false };
+      }
     };
 
     const detectScanMode = (data) => {
@@ -255,13 +280,17 @@
           avgOutTime = Math.round(outs.reduce((a, b) => a + b, 0) / outs.length);
         }
       } else if (emp.scan === 4) {
-        const complete4 = dailyRows.filter(r => getClusters(r.scans).length >= 4);
+        const complete4 = dailyRows.filter(r => {
+          const s = r.scans.filter(x => x !== null).sort((a, b) => a - b);
+          const li = findLunchPair(s);
+          return li !== null && li + 1 < s.length - 1;
+        });
         if (complete4.length > 0) {
           const avg = (arr) => Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
-          avg4InAM  = avg(complete4.map(r => getClusters(r.scans)[0][0]));
-          avg4OutAM = avg(complete4.map(r => { const c = getClusters(r.scans); return c[1][c[1].length-1]; }));
-          avg4InPM  = avg(complete4.map(r => { const c = getClusters(r.scans); return c[c.length-2][0]; }));
-          avg4OutPM = avg(complete4.map(r => { const c = getClusters(r.scans); return c[c.length-1][c[c.length-1].length-1]; }));
+          avg4InAM  = avg(complete4.map(r => r.scans.filter(x => x !== null).sort((a, b) => a - b)[0]));
+          avg4OutAM = avg(complete4.map(r => { const s = r.scans.filter(x => x !== null).sort((a, b) => a - b); return s[findLunchPair(s)]; }));
+          avg4InPM  = avg(complete4.map(r => { const s = r.scans.filter(x => x !== null).sort((a, b) => a - b); return s[findLunchPair(s) + 1]; }));
+          avg4OutPM = avg(complete4.map(r => r.scans.filter(x => x !== null).sort((a, b) => a - b).slice(-1)[0]));
         }
       }
 
@@ -310,30 +339,33 @@
           } else {
             let effectiveRes = res;
             let filledScan4 = null;
+            const effectiveCount = res.effectiveScanCount ?? clusters.length;
 
             if (res.isHalfDay) {
               warning = "ມາເຄິ່ງວັນ (0.5)";
               usedClusterIdxs.add(0);
               usedClusterIdxs.add(clusters.length - 1);
-            } else if (clusters.length < emp.scan) {
+            } else if (effectiveCount < emp.scan) {
               // Try to fill missing 4-scan data with monthly averages
-              // (only when scans span noon — i.e. not a half day)
               if (emp.scan === 4 && avg4InAM !== null) {
-                const n = clusters.length;
+                const n = effectiveCount;
                 let filledTimes = null, entries = [];
                 if (n === 3) {
-                  const midRep = (clusters[1][0] + clusters[1][clusters[1].length-1]) / 2;
-                  if (midRep < MID_DAY) {
-                    // Have IN_AM, OUT_AM, OUT_PM — missing IN_PM
-                    filledTimes = [clusters[0][0], clusters[1][clusters[1].length-1], avg4InPM, clusters[2][clusters[2].length-1]];
-                    entries = [{ time: avg4InPM, type: 'IN_PM' }];
+                  if (res.resolvedH !== undefined) {
+                    // Lunch gap detected: have IN_AM, OUT_AM, IN_PM — missing OUT_PM
+                    filledTimes = [res.resolvedF, res.resolvedG, res.resolvedH, avg4OutPM];
+                    entries = [{ time: avg4OutPM, type: 'OUT_PM' }];
                   } else {
-                    // Have IN_AM, IN_PM, OUT_PM — missing OUT_AM
-                    filledTimes = [clusters[0][0], avg4OutAM, clusters[1][0], clusters[2][clusters[2].length-1]];
-                    entries = [{ time: avg4OutAM, type: 'OUT_AM' }];
+                    const midRep = (clusters[1][0] + clusters[1][clusters[1].length-1]) / 2;
+                    if (midRep < MID_DAY) {
+                      filledTimes = [clusters[0][0], clusters[1][clusters[1].length-1], avg4InPM, clusters[2][clusters[2].length-1]];
+                      entries = [{ time: avg4InPM, type: 'IN_PM' }];
+                    } else {
+                      filledTimes = [clusters[0][0], avg4OutAM, clusters[1][0], clusters[2][clusters[2].length-1]];
+                      entries = [{ time: avg4OutAM, type: 'OUT_AM' }];
+                    }
                   }
                 } else if (n === 2) {
-                  // Have IN_AM + OUT_PM — missing OUT_AM and IN_PM
                   filledTimes = [clusters[0][0], avg4OutAM, avg4InPM, clusters[1][clusters[1].length-1]];
                   entries = [{ time: avg4OutAM, type: 'OUT_AM' }, { time: avg4InPM, type: 'IN_PM' }];
                 }
@@ -348,27 +380,30 @@
                 }
               }
               if (!filledScan4) {
-                // Half day or no average: show existing times used
                 const usedIn  = formatMinsToClock(clusters[0][0]);
                 const usedOut = formatMinsToClock(clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1]);
-                warning = `ສະແກນ ${clusters.length}/${emp.scan} → [${usedIn}–${usedOut}]`;
+                warning = `ສະແກນ ${effectiveCount}/${emp.scan} → [${usedIn}–${usedOut}]`;
                 usedClusterIdxs.add(0);
                 usedClusterIdxs.add(clusters.length - 1);
               }
-            } else if (clusters.length > emp.scan) {
+            } else if (effectiveCount > emp.scan) {
               warning = `ສະແກນ ${clusters.length} ຄັ້ງ (ເກີນ ${emp.scan})`;
               if (emp.scan === 2) {
                 usedClusterIdxs.add(0);
                 usedClusterIdxs.add(clusters.length - 1);
               } else {
-                usedClusterIdxs.add(0); usedClusterIdxs.add(1);
-                usedClusterIdxs.add(clusters.length - 2); usedClusterIdxs.add(clusters.length - 1);
+                clusters.forEach((_, i) => usedClusterIdxs.add(i));
               }
             } else {
               clusters.forEach((_, i) => usedClusterIdxs.add(i));
             }
 
-            presenceMap.set(info.day, { ...row, warning, validCount, dayVal: effectiveRes.dayVal, netM: effectiveRes.netM, clusters, usedClusterIdxs, ...(filledScan4 && { filledScan4 }) });
+            presenceMap.set(info.day, { ...row, warning, validCount, dayVal: effectiveRes.dayVal, netM: effectiveRes.netM, clusters, usedClusterIdxs,
+              ...(filledScan4 && { filledScan4 }),
+              ...(res.ignoredScanVals && { ignoredScanVals: res.ignoredScanVals }),
+              ...(res.resolvedG !== undefined && { resolvedG: res.resolvedG }),
+              ...(res.resolvedH !== undefined && { resolvedH: res.resolvedH }),
+            });
 
             if (info.isSunday) {
               // Sunday attendance
@@ -620,9 +655,9 @@
             const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
             const lastScan = lastC ? lastC[lastC.length - 1] : null;
             const eveLimit = emp.shift85 ? 1020 : 1110;
-            if (emp.scanMode === 4 && clusters.length >= 4) {
-              const G = clusters[1][clusters[1].length - 1];
-              const H = clusters[2][0];
+            if (emp.scanMode === 4 && (log.resolvedG !== undefined || clusters.length >= 4)) {
+              const G = log.resolvedG ?? clusters[1][clusters[1].length - 1];
+              const H = log.resolvedH ?? clusters[2][0];
               const lunchDur = H - G;
               const lunchExcess = Math.max(0, lunchDur - BREAK);
               const lateMorning = firstScan !== null ? Math.max(0, firstScan - 480) : 0;
@@ -947,8 +982,8 @@
                               <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length > 1 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
                             </>) : (<>
                               <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[1] ? formatMinsToClock(clusters[1][clusters[1].length-1]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length >= 3 ? formatMinsToClock(clusters[clusters.length-2][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && (log?.resolvedG != null || clusters[1]) ? formatMinsToClock(log?.resolvedG ?? clusters[1][clusters[1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && (log?.resolvedH != null || clusters.length >= 3) ? formatMinsToClock(log?.resolvedH ?? clusters[clusters.length-2][0]) : '—'}</td>
                               <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length >= 2 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
                             </>)}
                             <td className="px-2 py-1 text-right font-mono font-black">
@@ -2145,7 +2180,7 @@
                                 ? log.clusters
                                   ? <>
                                       {log.clusters.flatMap((cluster, ci) =>
-                                        cluster.map(t => ({ t, used: log.usedClusterIdxs.has(ci) }))
+                                        cluster.map(t => ({ t, used: log.ignoredScanVals ? !log.ignoredScanVals.has(t) : log.usedClusterIdxs.has(ci) }))
                                       ).sort((a, b) => a.t - b.t).map(({ t, used }, i) => (
                                         <span key={i}>
                                           {i > 0 && <span className="text-slate-300"> | </span>}
@@ -2209,9 +2244,9 @@
                           const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
                           const lastScan = lastC ? lastC[lastC.length - 1] : null;
                           const eveLimit = selectedEmp.shift85 ? 1020 : 1110;
-                          if (selectedEmp.scanMode === 4 && clusters.length >= 4) {
-                            const G = clusters[1][clusters[1].length - 1];
-                            const H = clusters[2][0];
+                          if (selectedEmp.scanMode === 4 && (log.resolvedG !== undefined || clusters.length >= 4)) {
+                            const G = log.resolvedG ?? clusters[1][clusters[1].length - 1];
+                            const H = log.resolvedH ?? clusters[2][0];
                             const lunchDur = H - G;
                             const lunchExcess = Math.max(0, lunchDur - BREAK);
                             const lateMorning = firstScan !== null ? Math.max(0, firstScan - 480) : 0;
