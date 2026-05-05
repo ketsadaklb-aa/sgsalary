@@ -444,15 +444,16 @@
 
       const basePay = emp.base;
       const dailyRateKip = Math.round(standardMinsPerDay * hourlyRate / 60);
-      const rawWorkPay = Math.min(Math.round(totalPayMinsWithAddback * hourlyRate / 60), basePay);
+      const rawWorkPay = Math.min(Math.round(cappedPayMins * hourlyRate / 60), basePay);
       // Absent penalty: 2× per absent day (extra 1× on top of the hours already not counted)
       const absentPenalty = absentDates.length * dailyRateKip;
       const workPay = Math.max(0, rawWorkPay - absentPenalty);
       const absentDeduction = Math.round(basePay - workPay);
+      const addbackPay = Math.round(addbackApplied * hourlyRate / 60);
       const qualifiesForBonus = !emp.no_ot && (emp.ot_bonus_enabled !== false) && otH >= 15 && absentDates.length === 0;
       const otPay = qualifiesForBonus ? 0 : otH * OT_RATE;
       const otBonus = qualifiesForBonus ? 1000000 : 0;
-      const totalGross = workPay + otPay + (emp.special_bonus || 0) + otBonus;
+      const totalGross = workPay + addbackPay + otPay + (emp.special_bonus || 0) + otBonus;
       const netPay = totalGross - (emp.advance || 0);
 
       return {
@@ -466,6 +467,7 @@
         absentPenalty,
         workPay,
         absentDeduction,
+        addbackPay,
         hourlyRate,
         totalPayMins: totalPayMinsWithAddback,
         addbackApplied,
@@ -651,9 +653,12 @@
           const shortMins = Math.max(0, stdMins - payMins);
           if (shortMins > 0) {
             const clusters = log.clusters || [];
-            const firstScan = clusters.length > 0 ? clusters[0][0] : null;
             const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
-            const lastScan = lastC ? lastC[lastC.length - 1] : null;
+            const filledIn2  = log.filledScan?.type === 'IN'  ? log.filledScan.time : null;
+            const filledOut2 = log.filledScan?.type === 'OUT' ? log.filledScan.time : null;
+            const filledOutPM = log.filledScan4?.find(e => e.type === 'OUT_PM')?.time;
+            const firstScan = filledIn2 ?? (clusters.length > 0 ? clusters[0][0] : null);
+            const lastScan = filledOutPM ?? filledOut2 ?? (lastC ? lastC[lastC.length - 1] : null);
             const eveLimit = emp.shift85 ? 1020 : 1110;
             if (emp.scanMode === 4 && (log.resolvedG !== undefined || clusters.length >= 4)) {
               const G = log.resolvedG ?? clusters[1][clusters[1].length - 1];
@@ -2243,9 +2248,12 @@
                         const shortMins = Math.max(0, stdMins - payMins);
                         if (shortMins > 0) {
                           const clusters = log.clusters || [];
-                          const firstScan = clusters.length > 0 ? clusters[0][0] : null;
                           const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
-                          const lastScan = lastC ? lastC[lastC.length - 1] : null;
+                          const filledIn2  = log.filledScan?.type === 'IN'  ? log.filledScan.time : null;
+                          const filledOut2 = log.filledScan?.type === 'OUT' ? log.filledScan.time : null;
+                          const filledOutPM = log.filledScan4?.find(e => e.type === 'OUT_PM')?.time;
+                          const firstScan = filledIn2 ?? (clusters.length > 0 ? clusters[0][0] : null);
+                          const lastScan = filledOutPM ?? filledOut2 ?? (lastC ? lastC[lastC.length - 1] : null);
                           const eveLimit = selectedEmp.shift85 ? 1020 : 1110;
                           if (selectedEmp.scanMode === 4 && (log.resolvedG !== undefined || clusters.length >= 4)) {
                             const G = log.resolvedG ?? clusters[1][clusters[1].length - 1];
