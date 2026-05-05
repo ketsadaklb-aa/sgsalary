@@ -970,27 +970,29 @@
                     <tbody>
                       {rawRows.map(({ day, dayName, isSun, isHoliday, holidayName, log }) => {
                         const clusters = log?.clusters || [];
-                        const isAbsent = !isHoliday && (!log || log.validCount === 0 || log.countAsAbsent);
+                        const sunHasData = isSun && log && log.validCount > 0;
+                        const isAbsent = !isHoliday && !isSun && (!log || log.validCount === 0 || log.countAsAbsent);
                         const rowBg = isHoliday ? 'bg-amber-100' : isSun ? 'bg-amber-50' : isAbsent ? 'bg-rose-50' : day % 2 === 0 ? 'bg-slate-50' : 'bg-white';
-                        const skip = isSun || isHoliday;
+                        const skip = isHoliday;
+                        const sunCell = (val) => val != null ? <span className="text-slate-400 italic">{formatMinsToClock(val)}</span> : '—';
                         return (
                           <tr key={day} className={`border-b border-slate-100 ${rowBg}`}>
                             <td className="px-2 py-1 font-bold">{day}</td>
                             <td className={`px-2 py-1 font-bold ${isHoliday ? 'text-amber-700' : isSun ? 'text-amber-500' : ''}`}>{dayName}{isHoliday && isSun ? ' 🏖️' : ''}</td>
                             {emp.scanMode === 2 ? (<>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length > 1 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters[0] ? sunCell(clusters[0][0]) : !skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters.length > 1 ? sunCell(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : !skip && !isAbsent && clusters.length > 1 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
                             </>) : (<>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && (log?.resolvedG != null || clusters[1]) ? formatMinsToClock(log?.resolvedG ?? clusters[1][clusters[1].length-1]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && (log?.resolvedH != null || clusters.length >= 3) ? formatMinsToClock(log?.resolvedH ?? clusters[clusters.length-2][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{!skip && !isAbsent && clusters.length >= 2 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters[0] ? sunCell(clusters[0][0]) : !skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{sunHasData && (log?.resolvedG != null || clusters[1]) ? sunCell(log?.resolvedG ?? clusters[1][clusters[1].length-1]) : !skip && !isAbsent && (log?.resolvedG != null || clusters[1]) ? formatMinsToClock(log?.resolvedG ?? clusters[1][clusters[1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{sunHasData && (log?.resolvedH != null || clusters.length >= 3) ? sunCell(log?.resolvedH ?? clusters[clusters.length-2][0]) : !skip && !isAbsent && (log?.resolvedH != null || clusters.length >= 3) ? formatMinsToClock(log?.resolvedH ?? clusters[clusters.length-2][0]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters.length >= 2 ? sunCell(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : !skip && !isAbsent && clusters.length >= 2 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
                             </>)}
                             <td className="px-2 py-1 text-right font-mono font-black">
                               {isHoliday ? <span className="text-amber-600">🏖️</span> : isSun ? <span className="text-amber-500">ອາທິດ</span> : isAbsent ? <span className="text-rose-500">ຂາດ</span> : fmtHours(minsToH(log.netM))}
                             </td>
                             <td className="px-2 py-1 text-[8px]">
-                              {isHoliday ? <span className="text-amber-700 font-black not-italic">{holidayName}</span> : <span className="text-slate-400 italic">{log?.warning || ''}</span>}
+                              {isHoliday ? <span className="text-amber-700 font-black not-italic">{holidayName}</span> : sunHasData ? <span className="text-slate-400 italic">ບໍ່ນັບ</span> : <span className="text-slate-400 italic">{log?.warning || ''}</span>}
                             </td>
                           </tr>
                         );
@@ -2178,7 +2180,7 @@
                             <td className="p-4 font-mono font-black text-[10px]">
                               {log && log.validCount > 0
                                 ? log.clusters
-                                  ? <>
+                                  ? <span className={isSun ? 'opacity-40' : ''}>
                                       {log.clusters.flatMap((cluster, ci) =>
                                         cluster.map(t => ({ t, used: log.ignoredScanVals ? !log.ignoredScanVals.has(t) : log.usedClusterIdxs.has(ci) }))
                                       ).sort((a, b) => a.t - b.t).map(({ t, used }, i) => (
@@ -2199,12 +2201,12 @@
                                           {" | "}~{formatMinsToClock(fs.time)}<span className="text-[8px] ml-0.5 opacity-70">({fs.type})</span>
                                         </span>
                                       ))}
-                                    </>
+                                    </span>
                                   : log.scans.filter(s => typeof s === 'number' && isFinite(s)).sort((a, b) => a - b).map(s => formatMinsToClock(s)).join(" | ")
                                 : "---"}
                             </td>
                             <td className="p-4 font-mono font-black text-slate-600">
-                              {log && log.validCount > 0 && !log.countAsAbsent ? fmtHours(minsToH(log.netM)) : "—"}
+                              {log && log.validCount > 0 && !log.countAsAbsent && !isSun ? fmtHours(minsToH(log.netM)) : "—"}
                             </td>
                             <td className="p-4">
                               {(!log || log.validCount === 0) && !isDayOff && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
@@ -2212,6 +2214,7 @@
                               {log?.warning && !log.countAsAbsent && <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] border ${log.warning.includes('0.5') ? 'bg-blue-100 text-blue-700 border-blue-200' : (log.filledScan || log.filledScan4) ? 'bg-sky-100 text-sky-700 border-sky-200' : 'bg-amber-100 text-amber-700 border-amber-200'}`}>{log.warning}</span>}
                               {log && log.validCount > 0 && !log.warning && !isDayOff && <span className="text-emerald-600 font-black text-[9px]">✅ OK</span>}
                               {isSun && <span className="text-amber-500 font-black text-[9px]">ວັນອາທິດ</span>}
+                              {isSun && log && log.validCount > 0 && <span className="text-slate-400 font-black text-[9px] ml-1">ບໍ່ນັບ</span>}
                               {isHoliday && <span className="text-blue-600 font-black text-[9px]">{holidayName}</span>}
                             </td>
                             <td className="p-4 text-center font-black text-purple-600 font-mono">{isDayOff ? '—' : log ? log.dayVal.toFixed(1) : '0'}</td>
