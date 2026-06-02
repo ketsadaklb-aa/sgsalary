@@ -589,7 +589,7 @@
                   type="text" autoFocus autoComplete="username"
                   value={username} onChange={e => { setUsername(e.target.value); setError(''); }}
                   className="w-full p-3 border-2 rounded-xl font-bold focus:border-blue-500 outline-none transition-colors"
-                  placeholder="admin"
+                  placeholder="ຊື່ຜູ້ໃຊ້"
                 />
               </div>
               <div>
@@ -1115,7 +1115,8 @@
       const [newUserForm, setNewUserForm] = useState({ username: '', password: '', role: 'user' });
       const [userMsg, setUserMsg] = useState('');
       const [cloudSync, setCloudSync] = useState(false);
-      const [appLoading, setAppLoading] = useState(true);
+      // Don't flash a spinner for unauthenticated users — only show loading when already logged in
+      const [appLoading, setAppLoading] = useState(() => !!getAuthSession());
 
       const [tab, setTab] = useState("upload");
       const [employees, setEmployees] = useState(loadEmployees);
@@ -1155,8 +1156,14 @@
       }, [monthCfg]);
 
       // Initial load: fetch all data from cloud, fall back to localStorage
+      // Runs on mount AND whenever user logs in (authSession.username changes)
       useEffect(() => {
         if (!authSession) { setAppLoading(false); return; }
+        initialLoadDone.current = false; // prevent auto-save while loading
+        combinedDataRef.current = null;
+        setResults(null);
+        setTab("upload");
+        setAppLoading(true);
         Promise.all([
           apiCall('GET', '/api/config/employees'),
           apiCall('GET', '/api/config/monthCfg'),
@@ -1224,7 +1231,7 @@
           initialLoadDone.current = true;
           setAppLoading(false);
         });
-      }, []);
+      }, [authSession?.username]); // re-runs when user logs in or switches account
 
       // Recompute results in real-time whenever employees or monthCfg changes
       useEffect(() => {
