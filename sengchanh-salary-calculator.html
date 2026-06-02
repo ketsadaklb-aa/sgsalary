@@ -1140,6 +1140,7 @@
       const [bulkProgress, setBulkProgress] = useState(0);
       const [showNewMonth, setShowNewMonth] = useState(false);
       const [newMonthDraft, setNewMonthDraft] = useState(null);
+      const [missingEmps, setMissingEmps] = useState([]);
 
       // Auto-save to cloud + localStorage (skip during initial load)
       useEffect(() => {
@@ -1336,6 +1337,12 @@
             return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
           });
         }
+        // Warn about employees in settings with no scan data in uploaded files
+        const noData = employees.filter(e => {
+          const d = combinedData[e.code] || [];
+          return !d.some(row => row.scans.some(s => s !== null));
+        });
+        setMissingEmps(noData);
         setStatus(`✅ ຄຳນວນສຳເລັດ ${Object.keys(res).length} ຄົນ`);
         setTab("results");
       }, [employees, monthCfg]);
@@ -1408,15 +1415,21 @@
 
       const loadSession = (session) => {
         setMonthCfg(session.monthCfg);
-        setEmployees(session.employees);
+        // Merge: current employee settings take precedence; add session-only employees
+        const currentMap = new Map(employees.map(e => [e.code, e]));
+        const sessionOnlyEmps = (session.employees || []).filter(e => !currentMap.has(e.code));
+        const mergedEmps = [...employees, ...sessionOnlyEmps];
+        setEmployees(mergedEmps);
         combinedDataRef.current = session.scanData;
         saveCurrentScanData(session.scanData);
         const res = {};
-        session.employees.forEach(emp => {
+        mergedEmps.forEach(emp => {
           const data = session.scanData[emp.code] || [];
           if (data.some(row => row.scans.some(s => s !== null)))
             res[emp.code] = computeSalary(emp, data, session.monthCfg);
         });
+        const noData = mergedEmps.filter(e => !res[e.code]);
+        setMissingEmps(noData);
         setResults(res);
         setStatus(`✅ ໂຫລດ "${session.label}" ສຳເລັດ — ${session.employeeCount} ຄົນ`);
         setTab("results");
@@ -1434,6 +1447,7 @@
         localStorage.removeItem("ssc_currentScanData");
         apiCall('DELETE', '/api/active-work', { username: authSession.username });
         setResults(null);
+        setMissingEmps([]);
         setStatus("");
         setTab("upload");
       };
@@ -1988,6 +2002,17 @@
             {/* ── RESULTS TAB ─────────────────────────────────────────────── */}
             {tab === "results" && results && (
               <div className="space-y-8 animate-in">
+                {missingEmps.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+                    <span className="text-xl mt-0.5">⚠️</span>
+                    <div className="flex-1">
+                      <p className="font-black text-amber-800 text-sm">ພະນັກງານ {missingEmps.length} ຄົນ ບໍ່ມີຂໍ້ມູນ — ກວດ CSV / ລະຫັດພະນັກງານ</p>
+                      <p className="text-[11px] text-amber-700 font-bold mt-1 leading-relaxed">{missingEmps.map(e => `${e.name} (#${e.code})`).join(' • ')}</p>
+                      <p className="text-[10px] text-amber-500 font-bold mt-1">ອາດຈະ: ລະຫັດໃນ CSV ບໍ່ຕົງກັບລະຫັດໃນ Settings, ຫຼື ໄຟລ໌ CSV ບໍ່ມີຂໍ້ມູນຂອງຄົນນີ້</p>
+                    </div>
+                    <button onClick={() => setMissingEmps([])} className="text-amber-400 hover:text-amber-600 font-black text-lg leading-none">×</button>
+                  </div>
+                )}
                 <div className="flex justify-end">
                   <button
                     onClick={generateBulkPDF}
