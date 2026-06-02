@@ -1171,9 +1171,10 @@
           // Restore active work from DB (primary) then localStorage (fallback)
           const activeRes = await apiCall('GET', `/api/active-work?u=${encodeURIComponent(authSession.username)}`);
           const activeData = activeRes.ok && activeRes.data ? activeRes.data.scanData : loadCurrentScanData();
+          const emps = empsRes.ok && empsRes.data ? empsRes.data : loadEmployees();
+          let loadedResults = false;
           if (activeData) {
             combinedDataRef.current = activeData;
-            const emps = empsRes.ok && empsRes.data ? empsRes.data : loadEmployees();
             const cfg  = (activeRes.ok && activeRes.data?.monthCfg) || (cfgRes.ok && cfgRes.data) || loadMonthCfg();
             const res = {};
             emps.forEach(emp => {
@@ -1181,7 +1182,27 @@
               if (empData.some(row => row.scans.some(s => s !== null)))
                 res[emp.code] = computeSalary(emp, empData, cfg);
             });
-            if (Object.keys(res).length > 0) { setResults(res); setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ"); }
+            if (Object.keys(res).length > 0) { setResults(res); setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ"); loadedResults = true; setTab("results"); }
+          }
+          // If no active work for this user, auto-load the most recent saved session
+          if (!loadedResults && sessionsRes.ok && sessionsRes.data && sessionsRes.data.length > 0) {
+            const latest = sessionsRes.data[0];
+            combinedDataRef.current = latest.scanData;
+            const currentMap = new Map(emps.map(e => [e.code, e]));
+            const sessionOnlyEmps = (latest.employees || []).filter(e => !currentMap.has(e.code));
+            const mergedEmps = [...emps, ...sessionOnlyEmps];
+            const res = {};
+            mergedEmps.forEach(emp => {
+              const data = latest.scanData[emp.code] || [];
+              if (data.some(row => row.scans.some(s => s !== null)))
+                res[emp.code] = computeSalary(emp, data, latest.monthCfg);
+            });
+            if (Object.keys(res).length > 0) {
+              setResults(res);
+              setMonthCfg(latest.monthCfg);
+              setStatus(`✅ ໂຫລດ "${latest.label}" ອັດຕະໂນມັດ`);
+              setTab("results");
+            }
           }
           initialLoadDone.current = true;
           setAppLoading(false);
