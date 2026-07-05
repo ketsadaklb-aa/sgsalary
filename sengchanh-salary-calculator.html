@@ -1561,6 +1561,38 @@
         URL.revokeObjectURL(url);
       };
 
+      // ─── EXPORT LDB BANK TRANSFER FILE ──────────────────────────────────────────
+      // Produces the exact LDB Biz bulk-transfer CSV: No,ACCOUNT_NAME,ACCOUNT_NUMBER,AMOUNT,DESC
+      const exportLDB = () => {
+        if (!results) { setStatus("❌ ຍັງບໍ່ມີຜົນການຄຳນວນ"); return; }
+        const desc = `ເງິນເດືອນ ${monthCfg.label}`;
+        const esc = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+        const included = [], missing = [], nonpositive = [];
+        for (const [, r] of orderedResults) {
+          const amount = Math.round(r.netPay || 0);
+          const acct = (r.ldb_account || '').toString().trim();
+          const name = (r.ldb_name || r.name || '').toString().trim();
+          if (!acct) { missing.push(r.name); continue; }
+          if (amount <= 0) { nonpositive.push(r.name); continue; }
+          included.push({ name, acct, amount });
+        }
+        if (included.length === 0) { setStatus("❌ ບໍ່ມີບັນຊີທະນາຄານ — ກະລຸນາໃສ່ເລກບັນຊີ LDB ໃນ Settings ກ່ອນ"); return; }
+        const lines = ['No,ACCOUNT_NAME,ACCOUNT_NUMBER,AMOUNT,DESC'];
+        included.forEach((x, i) => lines.push([i + 1, esc(x.name), esc(x.acct), x.amount, esc(desc)].join(',')));
+        const total = included.reduce((a, x) => a + x.amount, 0);
+        const blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `LDB-transfer-${monthCfg.label.replace(/\s+/g, '')}.csv`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        let msg = `✅ LDB export — ${included.length} ລາຍການ, ລວມ ${fmt(total)} ກີບ`;
+        if (missing.length) msg += ` · ⚠ ຂາດເລກບັນຊີ ${missing.length} ຄົນ: ${missing.join(', ')}`;
+        if (nonpositive.length) msg += ` · ${nonpositive.length} ຄົນ ຍອດ ≤0 ບໍ່ລວມ`;
+        setStatus(msg);
+      };
+
       const importSessions = (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -1809,6 +1841,7 @@
                 { key: "upload",   label: "ອັບໂຫລດ",   icon: "upload" },
                 { key: "settings", label: "ຕັ້ງຄ່າ",     icon: "settings" },
                 { key: "results",  label: "ບົດສະຫຼຸບ", icon: "file" },
+                { key: "ldb",      label: "ໂອນເງິນ LDB", icon: "building" },
               ].map(({ key, label, icon }) => (
                 <button key={key} onClick={() => setTab(key)}
                   className={`px-8 py-5 text-sm font-bold border-b-4 transition-all flex items-center gap-2 ${tab === key ? "bg-blue-50 text-blue-700 border-blue-700" : "text-slate-500 border-transparent hover:bg-slate-50"}`}>
@@ -2390,8 +2423,86 @@
 
             {tab === "results" && !results && (
               <div className="text-center py-24 text-slate-400">
-                <div className="text-7xl mb-4 opacity-30">📑</div>
+                <div className="flex justify-center mb-4 text-slate-300"><Icon n="file" c="w-16 h-16"/></div>
                 <p className="font-black text-xl">ຍັງບໍ່ມີຂໍ້ມູນ — ກະລຸນາອັບໂຫລດໄຟລ໌ CSV ກ່ອນ</p>
+              </div>
+            )}
+
+            {/* ── LDB BANK TRANSFER TAB ───────────────────────────────────── */}
+            {tab === "ldb" && (
+              <div className="space-y-6 animate-in">
+                {!results ? (
+                  <div className="text-center py-24 text-slate-400">
+                    <div className="flex justify-center mb-4 text-slate-300"><Icon n="building" c="w-16 h-16"/></div>
+                    <p className="font-black text-xl">ຍັງບໍ່ມີຜົນການຄຳນວນ — ໄປໜ້າ "ບົດສະຫຼຸບ" ກ່ອນ</p>
+                  </div>
+                ) : (() => {
+                  const rows = orderedResults.map(([, r]) => r);
+                  const withAcct = rows.filter(r => (r.ldb_account || '').toString().trim() && Math.round(r.netPay || 0) > 0);
+                  const missing = rows.filter(r => !(r.ldb_account || '').toString().trim());
+                  const total = withAcct.reduce((a, r) => a + Math.round(r.netPay || 0), 0);
+                  const upd = (code, field, val) => setEmployees(prev => prev.map(e => e.code === code ? { ...e, [field]: val } : e));
+                  return (<>
+                    <div className="bg-gradient-to-br from-emerald-600 to-green-700 rounded-[32px] p-7 shadow-2xl text-white flex flex-wrap items-center justify-between gap-5">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.15em] opacity-70 flex items-center gap-1.5"><Icon n="building" c="w-3.5 h-3.5"/> ໂອນເງິນເດືອນຜ່ານ LDB Biz — {monthCfg.label}</p>
+                        <p className="text-3xl font-black mt-1 font-mono">{fmt(total)} <span className="text-lg opacity-80">ກີບ</span></p>
+                        <p className="text-emerald-100 text-sm font-bold mt-1">{withAcct.length} ຄົນ ພ້ອມໂອນ{missing.length ? ` · ${missing.length} ຄົນ ຍັງບໍ່ມີເລກບັນຊີ` : ''}</p>
+                      </div>
+                      <button onClick={exportLDB} className="bg-white text-emerald-700 font-black px-6 py-3.5 rounded-2xl shadow-lg hover:bg-emerald-50 active:scale-95 transition-all flex items-center gap-2">
+                        <Icon n="download" c="w-5 h-5"/> Export CSV (LDB)
+                      </button>
+                    </div>
+                    {missing.length > 0 && (
+                      <div className="bg-amber-50 border-2 border-amber-200 rounded-2xl px-5 py-3 text-sm font-bold text-amber-800 flex items-start gap-2">
+                        <Icon n="warning" c="w-4 h-4 mt-0.5 shrink-0"/> <span>{missing.length} ຄົນ ຍັງບໍ່ມີເລກບັນຊີ (ຈະບໍ່ຖືກລວມ): {missing.map(r => r.name).join(', ')}</span>
+                      </div>
+                    )}
+                    <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm whitespace-nowrap">
+                          <thead className="bg-slate-900 text-white text-[10px] font-black uppercase">
+                            <tr>
+                              <th className="px-3 py-3 text-left">#</th>
+                              <th className="px-3 py-3 text-left">ຊື່</th>
+                              <th className="px-3 py-3 text-left">ເລກບັນຊີ LDB</th>
+                              <th className="px-3 py-3 text-left">ຊື່ບັນຊີ (ຖ້າຕ່າງຈາກຊື່)</th>
+                              <th className="px-3 py-3 text-right">ຍອດໂອນ (Net Pay)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((r, i) => {
+                              const amt = Math.round(r.netPay || 0);
+                              const noAcct = !(r.ldb_account || '').toString().trim();
+                              return (
+                              <tr key={r.code} className={`border-t ${noAcct ? 'bg-amber-50/50' : (i % 2 ? 'bg-slate-50/40' : 'bg-white')}`}>
+                                <td className="px-3 py-2 font-bold text-slate-400">{r.code}</td>
+                                <td className="px-3 py-2 font-black">{r.name}</td>
+                                <td className="px-3 py-2">
+                                  <input type="text" inputMode="numeric" placeholder="ເລກບັນຊີ" value={r.ldb_account || ''} onChange={e => upd(r.code, 'ldb_account', e.target.value)}
+                                    className={`w-48 p-2 border-2 rounded-lg font-mono text-sm outline-none ${noAcct ? 'border-amber-300 focus:border-amber-500' : 'border-slate-200 focus:border-emerald-500'}`}/>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <input type="text" placeholder={r.name} value={r.ldb_name || ''} onChange={e => upd(r.code, 'ldb_name', e.target.value)}
+                                    className="w-40 p-2 border-2 border-slate-200 rounded-lg text-sm outline-none focus:border-emerald-500"/>
+                                </td>
+                                <td className={`px-3 py-2 text-right font-mono font-black ${amt <= 0 ? 'text-rose-500' : 'text-slate-800'}`}>{fmt(amt)}</td>
+                              </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot className="bg-slate-900 text-white font-black">
+                            <tr>
+                              <td colSpan={4} className="px-3 py-3 text-right uppercase text-xs tracking-widest opacity-70">ລວມທີ່ພ້ອມໂອນ ({withAcct.length} ຄົນ)</td>
+                              <td className="px-3 py-3 text-right font-mono text-base text-emerald-300">{fmt(total)}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                      <div className="px-5 py-3 text-[11px] text-slate-400 font-bold border-t">ໃສ່ເລກບັນຊີ (save ອັດຕະໂນມັດ) → ກົດ Export CSV → ອັບໂຫລດເຂົ້າ LDB Biz. ຍອດໂອນ = Net Pay (ຫຼັງຫັກເບີກ).</div>
+                    </div>
+                  </>);
+                })()}
               </div>
             )}
           </main>
