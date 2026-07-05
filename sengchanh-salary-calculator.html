@@ -732,7 +732,7 @@
         const log = emp.dailyLog.get(d);
         rawRows.push({ day: d, dayName: LAO_DAYS[date.getDay()], isSun, isHoliday, holidayName, log });
         if (isSun || isHoliday) continue;
-        const isAbsent = !log || log.validCount === 0 || log.countAsAbsent;
+        const isAbsent = !log || log.countAsAbsent; // overridden/filled days are present, not absent
         if (isAbsent) {
           const deduct = Math.round(2 * stdMins * emp.hourlyRate / 60);
           deductionRows.push({ day: d, reason: 'ຂາດວຽກ (×2)', shortMins: stdMins, deduct });
@@ -1067,7 +1067,7 @@
                     <tbody>
                       {rawRows.map(({ day, dayName, isSun, isHoliday, holidayName, log }) => {
                         const sunHasData = isSun && log && log.validCount > 0;
-                        const isAbsent = !isHoliday && !isSun && (!log || log.validCount === 0 || log.countAsAbsent);
+                        const isAbsent = !isHoliday && !isSun && (!log || log.countAsAbsent); // overridden days = present
                         const rowBg = isHoliday ? 'bg-amber-100' : isSun ? 'bg-amber-50' : isAbsent ? 'bg-rose-50' : day % 2 === 0 ? 'bg-slate-50' : 'bg-white';
                         const skip = isHoliday;
                         const slot = log?.slot || {};
@@ -2604,7 +2604,7 @@
                       if (isSun) continue;
                       if (modalHolidayMap.has(d)) continue;
                       const log = selectedEmp.dailyLog.get(d);
-                      const isAbsent = !log || log.validCount === 0 || log.countAsAbsent;
+                      const isAbsent = !log || log.countAsAbsent; // overridden/filled days are present, not absent
                       if (isAbsent) {
                         rows.push({ day: d, reason: 'ຂາດວຽກ (×2)', shortMins: stdMins, deduct: Math.round(2 * stdMins * selectedEmp.hourlyRate / 60) });
                       } else {
