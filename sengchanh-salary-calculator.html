@@ -19,6 +19,8 @@
     * { font-family: 'Noto Sans Lao Looped', sans-serif; }
     .animate-in { animation: fadeIn 0.2s ease; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    /* Compact data tables so more columns fit without side-scrolling */
+    .compact-tbl th, .compact-tbl td { padding: 0.4rem 0.55rem !important; }
   </style>
 </head>
 <body class="bg-slate-50">
@@ -224,6 +226,94 @@
       }
     };
 
+    // ─── MANUAL OVERRIDE ─────────────────────────────────────────────────────
+    // Admin-chosen times for a single day. Slots are minutes-since-midnight or null.
+    // A blank session is genuinely not worked — NO average is invented.
+    //   4-scan slot: { amIn, amOut, pmIn, pmOut }   2-scan slot: { amIn, pmOut }
+    //   { absent: true } marks the day absent.
+    const calcFromOverride = (ov, scanMode, eveLimit) => {
+      if (!ov || ov.absent) return { absent: true };
+      const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+      if (scanMode === 2) {
+        const IN = num(ov.amIn), OUT = num(ov.pmOut);
+        if (IN === null || OUT === null || OUT <= IN) return { absent: true };
+        const span = OUT - IN;
+        const half = span < 300;
+        const otM = Math.max(0, OT_MORNING - IN) + Math.max(0, OUT - eveLimit);
+        // OT only counts on a full day (a half day never earns overtime)
+        return { netM: Math.max(0, span - BREAK_MINS - otM), otH: half ? 0 : minsToH(otM), dayVal: half ? 0.5 : 1.0, isHalfDay: half };
+      }
+      const amIn = num(ov.amIn), amOut = num(ov.amOut), pmIn = num(ov.pmIn), pmOut = num(ov.pmOut);
+      const hasAM = amIn !== null && amOut !== null && amOut > amIn;
+      const hasPM = pmIn !== null && pmOut !== null && pmOut > pmIn;
+      if (!hasAM && !hasPM) return { absent: true };
+      let netM = 0, otM = 0;
+      if (hasAM) { netM += Math.max(0, amOut - Math.max(amIn, OT_MORNING)); otM += Math.max(0, OT_MORNING - amIn); }
+      if (hasPM) { netM += Math.max(0, Math.min(pmOut, eveLimit) - pmIn); otM += Math.max(0, pmOut - eveLimit); }
+      const dayVal = (hasAM && hasPM) ? 1.0 : 0.5;
+      // OT only counts on a full day (a half day never earns overtime)
+      return { netM, otH: dayVal === 1.0 ? minsToH(otM) : 0, dayVal, isHalfDay: dayVal === 0.5 };
+    };
+
+    // "HH:MM" (from <input type=time>) → minutes-since-midnight, or null if blank/bad.
+    const parseHM = (v) => {
+      if (!v) return null;
+      const [h, m] = v.split(':').map(Number);
+      if (isNaN(h) || isNaN(m)) return null;
+      return h * 60 + m;
+    };
+    // Render an override slot as a short human string for the table.
+    const renderSlots = (ov, mode) => {
+      if (!ov || ov.absent) return 'ຂາດ';
+      const p = m => (typeof m === 'number' && isFinite(m)) ? formatMinsToClock(m) : '—';
+      return mode === 2 ? `${p(ov.amIn)} → ${p(ov.pmOut)}` : `${p(ov.amIn)}→${p(ov.amOut)} · ${p(ov.pmIn)}→${p(ov.pmOut)}`;
+    };
+
+    // ─── SMART SCAN → SLOT MAPPING ──────────────────────────────────────────────
+    // Collapse panic/duplicate scans (within EVENT_GAP min = one real punch) and keep
+    // the EARLIEST as the representative (he forgot he already scanned).
+    const EVENT_GAP = 15;               // minutes: scans this close = the same punch event
+    const MORNING_IN_MAX = 11 * 60;     // a first punch before 11:00 is a morning check-in
+    const EVENING_MIN    = 14 * 60;     // a last punch at/after 14:00 is an evening check-out
+    const LUNCH_EARLIEST = 10 * 60 + 30;// no lunch punch before 10:30 (earlier = morning re-scan noise)
+    const LUNCH_LATEST   = 15 * 60;     // no lunch punch at/after 15:00
+    const LUNCH_SPLIT    = 12 * 60 + 15;// a lone lunch punch before 12:15 = lunch-out, else lunch-in
+    const groupEvents = (scans) => {
+      const s = [...new Set(scans.filter(x => typeof x === 'number' && isFinite(x)))].sort((a, b) => a - b);
+      const reps = [];
+      let lastRaw = -Infinity;
+      for (const t of s) { if (t - lastRaw > EVENT_GAP) reps.push(t); lastRaw = t; }
+      return reps; // earliest of each cluster
+    };
+    // Map a day's scans to {amIn, amOut, pmIn, pmOut} (2-scan: {amIn, pmOut}). Missing slot = null.
+    // Anchors morning-in and evening-out, then takes the lunch pair only from the midday window
+    // so morning/evening re-scans can't be mistaken for lunch punches. No morning check-in ⇒
+    // treated as afternoon-only (no invented morning).
+    const mapScansToSlots = (scans, scanMode) => {
+      const ev = groupEvents(scans);
+      if (scanMode === 2) {
+        if (ev.length === 0) return { amIn: null, pmOut: null };
+        if (ev.length === 1) return ev[0] < MID_DAY ? { amIn: ev[0], pmOut: null } : { amIn: null, pmOut: ev[0] };
+        return { amIn: ev[0], pmOut: ev[ev.length - 1] };
+      }
+      const morningIn  = (ev.length && ev[0] < MORNING_IN_MAX) ? ev[0] : null;
+      const eveningOut = (ev.length && ev[ev.length - 1] >= EVENING_MIN) ? ev[ev.length - 1] : null;
+      let amOut = null, pmIn = null, pmOut = eveningOut;
+      if (morningIn != null) {
+        // Lunch pair = events inside the midday window (ignores morning/evening re-scan noise)
+        const mid = ev.filter(t => t !== morningIn && t !== eveningOut && t >= LUNCH_EARLIEST && t < LUNCH_LATEST);
+        if (mid.length >= 2) { amOut = mid[0]; pmIn = mid[mid.length - 1]; }
+        else if (mid.length === 1) { if (mid[0] < LUNCH_SPLIT) amOut = mid[0]; else pmIn = mid[0]; }
+      } else {
+        // No morning check-in → afternoon-only person; first midday+ punch is the arrival.
+        const aft = ev.filter(t => t !== eveningOut && t >= MORNING_IN_MAX);
+        if (aft.length) { pmIn = aft[0]; if (pmOut == null && aft.length >= 2) pmOut = aft[aft.length - 1]; }
+      }
+      return { amIn: morningIn, amOut, pmIn, pmOut };
+    };
+    // Editor pre-fill uses the same smart mapping.
+    const suggestSlots = (scans, scanMode) => mapScansToSlots(scans, scanMode);
+
     const detectScanMode = (data) => {
       const counts = data.map(row => row.scans.filter(s => s !== null).length).filter(c => c > 0);
       if (counts.length === 0) return 4;
@@ -231,7 +321,7 @@
       return avg <= 2.5 ? 2 : 4;
     };
 
-    const computeSalary = (emp, dailyRows, monthCfg) => {
+    const computeSalary = (emp, dailyRows, monthCfg, overridesObj = null) => {
       // Derive the true year/month from the actual CSV dateStr — never trust monthCfg alone
       let dataYear = monthCfg.year, dataMonth = monthCfg.month;
       for (const row of dailyRows) {
@@ -268,167 +358,122 @@
       let otH = 0, attendedDays = 0, totalPayMins = 0;
       const presenceMap = new Map();
 
-      // Pre-pass: compute average scan times from complete days for filling missing scans
+      // Pre-pass: average each slot over days that map to a COMPLETE set of punches — used
+      // only to fill a single genuinely-missing punch (admin can override any of it).
       let avgInTime = null, avgOutTime = null;
       let avg4InAM = null, avg4OutAM = null, avg4InPM = null, avg4OutPM = null;
+      const avgOf = (arr) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
       if (emp.scan === 2) {
-        const completeDays = dailyRows.filter(r => getClusters(r.scans).length >= 2);
-        if (completeDays.length > 0) {
-          const ins  = completeDays.map(r => getClusters(r.scans)[0][0]);
-          const outs = completeDays.map(r => { const c = getClusters(r.scans); return c[c.length-1][c[c.length-1].length-1]; });
-          avgInTime  = Math.round(ins.reduce((a, b) => a + b, 0) / ins.length);
-          avgOutTime = Math.round(outs.reduce((a, b) => a + b, 0) / outs.length);
-        }
-      } else if (emp.scan === 4) {
-        const complete4 = dailyRows.filter(r => {
-          const s = r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b);
-          const li = findLunchPair(s);
-          return li !== null && li + 1 < s.length - 1;
-        });
-        if (complete4.length > 0) {
-          const avg = (arr) => Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
-          avg4InAM  = avg(complete4.map(r => r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b)[0]));
-          avg4OutAM = avg(complete4.map(r => { const s = r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b); return s[findLunchPair(s)]; }));
-          avg4InPM  = avg(complete4.map(r => { const s = r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b); return s[findLunchPair(s) + 1]; }));
-          avg4OutPM = avg(complete4.map(r => r.scans.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b).slice(-1)[0]));
-        }
+        const cd = dailyRows.map(r => mapScansToSlots(r.scans, 2)).filter(s => s.amIn != null && s.pmOut != null);
+        avgInTime  = avgOf(cd.map(s => s.amIn));
+        avgOutTime = avgOf(cd.map(s => s.pmOut));
+      } else {
+        const cd = dailyRows.map(r => mapScansToSlots(r.scans, 4)).filter(s => s.amIn != null && s.amOut != null && s.pmIn != null && s.pmOut != null);
+        avg4InAM  = avgOf(cd.map(s => s.amIn));
+        avg4OutAM = avgOf(cd.map(s => s.amOut));
+        avg4InPM  = avgOf(cd.map(s => s.pmIn));
+        avg4OutPM = avgOf(cd.map(s => s.pmOut));
       }
 
       for (const row of dailyRows) {
         const info = getDayInfo(row.dateStr);
         const validCount = row.scans.filter(s => typeof s === 'number' && isFinite(s)).length;
+
+        // ── Manual override for this exact date takes priority over all auto-detection ──
+        const ov = overridesObj && overridesObj[row.dateStr];
+        if (ov) {
+          const oRes = calcFromOverride(ov, emp.scan, emp.scan === 2 ? eveLimit2Scan : OT_EVENING);
+          const baseEntry = { ...row, validCount, clusters: getClusters(row.scans), usedClusterIdxs: new Set(), isOverride: true, override: ov,
+            slot: { amIn: ov.amIn ?? null, amOut: ov.amOut ?? null, pmIn: ov.pmIn ?? null, pmOut: ov.pmOut ?? null } };
+          if (oRes.absent) {
+            presenceMap.set(info.day, { ...baseEntry, warning: '✎ ຂາດ (ແກ້ໄຂເອງ)', dayVal: 0, netM: 0, countAsAbsent: true });
+          } else {
+            presenceMap.set(info.day, { ...baseEntry, warning: '✎ ແກ້ໄຂເອງ', dayVal: oRes.dayVal, netM: oRes.netM });
+            if (info.isSunday) {
+              // Sunday attendance tracked but no pay adjustment
+            } else if (holidayMap.has(info.day)) {
+              if (!emp.no_ot) otH += oRes.otH;
+            } else {
+              attendedDays += oRes.dayVal;
+              if (!emp.no_ot) otH += oRes.otH;
+              const payMinsOv = Math.min(emp.scan === 2 ? oRes.netM + BREAK_MINS : oRes.netM, standardMinsPerDay);
+              totalPayMins += payMinsOv;
+            }
+          }
+          continue;
+        }
+
         if (validCount > 0) {
           const clusters = getClusters(row.scans);
-          const res = emp.scan === 2 ? calcDay2Scan(row.scans, eveLimit2Scan) : calcDay4Scan(row.scans);
-          let warning = "";
-          let usedClusterIdxs = new Set();
-
-          if (!res) {
-            // 2-scan with only 1 cluster — try to fill missing scan with monthly average
-            const singleTime = clusters[0][0];
-            const isSingleIN = singleTime < MID_DAY;
-            if (avgInTime !== null && avgOutTime !== null && Number.isFinite(avgInTime) && Number.isFinite(avgOutTime)) {
-              const filledTime  = isSingleIN ? avgOutTime : avgInTime;
-              const filledScans = isSingleIN ? [singleTime, avgOutTime] : [avgInTime, singleTime];
-              const filledRes   = calcDay2Scan(filledScans, eveLimit2Scan);
-              if (filledRes) {
-                const noteType = isSingleIN ? 'OUT' : 'IN';
-                warning = `ສະແກນດຽວ → ໃຊ້ ${noteType} ສະເລ່ຍ [${formatMinsToClock(filledTime)}]`;
-                usedClusterIdxs.add(0);
-                presenceMap.set(info.day, { ...row, warning, validCount, dayVal: filledRes.dayVal, netM: filledRes.netM, clusters, usedClusterIdxs, filledScan: { time: filledTime, type: noteType } });
-                if (info.isSunday) {
-                  // Sunday attendance tracked but no pay adjustment
-                } else if (holidayMap.has(info.day)) {
-                  if (!emp.no_ot) otH += filledRes.otH;
-                } else {
-                  attendedDays += filledRes.dayVal;
-                  if (!emp.no_ot) otH += filledRes.otH;
-                  const payMins2 = Math.min(filledRes.netM + BREAK_MINS, standardMinsPerDay);
-                  totalPayMins += payMins2;
-
-                }
-              } else {
-                warning = "ສະແກນດຽວ (ຂາດ)";
-                presenceMap.set(info.day, { ...row, warning, validCount, dayVal: 0, netM: 0, clusters, usedClusterIdxs, countAsAbsent: true });
-              }
-            } else {
-              // No average available yet — treat as absent
-              warning = "ສະແກນດຽວ (ຂາດ)";
-              presenceMap.set(info.day, { ...row, warning, validCount, dayVal: 0, netM: 0, clusters, usedClusterIdxs, countAsAbsent: true });
-            }
+          // Smart-pick the real punches (collapses panic/duplicate scans, earliest per event)
+          const slots = mapScansToSlots(row.scans, emp.scan);
+          const s2 = { ...slots };
+          const filledScan4 = [];
+          const P = (k) => s2[k] != null;
+          if (emp.scan === 2) {
+            // Fill a single genuinely-missing punch with the monthly average
+            if (P('amIn') && !P('pmOut') && avgOutTime != null) { s2.pmOut = avgOutTime; filledScan4.push({ time: avgOutTime, type: 'OUT' }); }
+            else if (!P('amIn') && P('pmOut') && avgInTime != null) { s2.amIn = avgInTime; filledScan4.push({ time: avgInTime, type: 'IN' }); }
           } else {
-            let effectiveRes = res;
-            let filledScan4 = null;
-            const effectiveCount = res.effectiveScanCount ?? clusters.length;
-
-            if (res.isHalfDay) {
-              warning = "ມາເຄິ່ງວັນ (0.5)";
-              usedClusterIdxs.add(0);
-              usedClusterIdxs.add(clusters.length - 1);
-            } else if (effectiveCount < emp.scan) {
-              // Try to fill missing 4-scan data with monthly averages
-              if (emp.scan === 4 && avg4InAM !== null && Number.isFinite(avg4InAM) && Number.isFinite(avg4OutPM)) {
-                const n = effectiveCount;
-                let filledTimes = null, entries = [];
-                if (n === 3) {
-                  if (res.resolvedH !== undefined) {
-                    // Lunch gap detected: have IN_AM, OUT_AM, IN_PM — missing OUT_PM
-                    filledTimes = [res.resolvedF, res.resolvedG, res.resolvedH, avg4OutPM];
-                    entries = [{ time: avg4OutPM, type: 'OUT_PM' }];
-                  } else {
-                    const midRep = (clusters[1][0] + clusters[1][clusters[1].length-1]) / 2;
-                    if (midRep < MID_DAY) {
-                      filledTimes = [clusters[0][0], clusters[1][clusters[1].length-1], avg4InPM, clusters[2][clusters[2].length-1]];
-                      entries = [{ time: avg4InPM, type: 'IN_PM' }];
-                    } else {
-                      filledTimes = [clusters[0][0], avg4OutAM, clusters[1][0], clusters[2][clusters[2].length-1]];
-                      entries = [{ time: avg4OutAM, type: 'OUT_AM' }];
-                    }
-                  }
-                } else if (n === 2) {
-                  filledTimes = [clusters[0][0], avg4OutAM, avg4InPM, clusters[1][clusters[1].length-1]];
-                  entries = [{ time: avg4OutAM, type: 'OUT_AM' }, { time: avg4InPM, type: 'IN_PM' }];
-                }
-                if (filledTimes) {
-                  const tryRes = calcDay4Scan(filledTimes);
-                  if (tryRes && !tryRes.isHalfDay) {
-                    effectiveRes = tryRes;
-                    filledScan4 = entries;
-                    warning = `ສະແກນ ${n}/4 → ໃຊ້ສະເລ່ຍ: ${entries.map(e => `${e.type} [~${formatMinsToClock(e.time)}]`).join(', ')}`;
-                    clusters.forEach((_, i) => usedClusterIdxs.add(i));
-                  }
-                }
-              }
-              if (!filledScan4) {
-                const usedIn  = formatMinsToClock(clusters[0][0]);
-                const usedOut = formatMinsToClock(clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1]);
-                warning = `ສະແກນ ${effectiveCount}/${emp.scan} → [${usedIn}–${usedOut}]`;
-                usedClusterIdxs.add(0);
-                usedClusterIdxs.add(clusters.length - 1);
-              }
-            } else if (effectiveCount > emp.scan) {
-              warning = `ສະແກນ ${clusters.length} ຄັ້ງ (ເກີນ ${emp.scan})`;
-              if (emp.scan === 2) {
-                usedClusterIdxs.add(0);
-                usedClusterIdxs.add(clusters.length - 1);
-              } else {
-                clusters.forEach((_, i) => usedClusterIdxs.add(i));
-              }
-            } else {
-              clusters.forEach((_, i) => usedClusterIdxs.add(i));
+            if (P('amOut') && P('pmIn')) {
+              // Both lunch punches present → he was here all day; fill a missing first/last tap
+              if (!P('amIn') && avg4InAM != null) { s2.amIn = avg4InAM; filledScan4.push({ time: avg4InAM, type: 'IN_AM' }); }
+              if (!P('pmOut') && avg4OutPM != null) { s2.pmOut = avg4OutPM; filledScan4.push({ time: avg4OutPM, type: 'OUT_PM' }); }
+            } else if (P('amIn') && P('pmOut')) {
+              // First & last present → fill a missing lunch tap
+              if (!P('amOut') && avg4OutAM != null) { s2.amOut = avg4OutAM; filledScan4.push({ time: avg4OutAM, type: 'OUT_AM' }); }
+              if (!P('pmIn') && avg4InPM != null) { s2.pmIn = avg4InPM; filledScan4.push({ time: avg4InPM, type: 'IN_PM' }); }
             }
+            // Only-morning / only-afternoon (no opposite session at all) → NOT filled: stays half-day.
+          }
 
-            presenceMap.set(info.day, { ...row, warning, validCount, dayVal: effectiveRes.dayVal, netM: effectiveRes.netM, clusters, usedClusterIdxs,
-              ...(filledScan4 && { filledScan4 }),
-              ...(res.ignoredScanVals && { ignoredScanVals: res.ignoredScanVals }),
-              ...(res.resolvedG !== undefined && { resolvedG: res.resolvedG }),
-              ...(res.resolvedH !== undefined && { resolvedH: res.resolvedH }),
-            });
+          let effectiveRes = calcFromOverride(s2, emp.scan, emp.scan === 2 ? eveLimit2Scan : OT_EVENING);
+          // A day with scans but no formable session (lone stray punch): credit half-day, 0 pay, NO absent penalty.
+          let broken = false;
+          if (effectiveRes.absent) { effectiveRes = { netM: 0, otH: 0, dayVal: 0.5, isHalfDay: true }; broken = true; }
 
-            if (info.isSunday) {
-              // Sunday attendance
-            } else if (holidayMap.has(info.day)) {
-              // Holiday: still track OT if they came in, but base pay handled via credit below
-              if (!emp.no_ot) otH += effectiveRes.otH;
-            } else {
-              attendedDays += effectiveRes.dayVal;
-              if (!emp.no_ot) otH += effectiveRes.otH;
-              // Hourly pay: capped at standardMinsPerDay so OT never compensates for absent days
-              const payMins = Math.min(emp.scan === 2 ? effectiveRes.netM + BREAK_MINS : effectiveRes.netM, standardMinsPerDay);
-              totalPayMins += payMins;
+          // Which raw scans were actually used (green) vs ignored (orange) — averages shown separately (blue)
+          const chosenReal = new Set([slots.amIn, slots.amOut, slots.pmIn, slots.pmOut].filter(x => x != null));
+          const rawDistinct = [...new Set(row.scans.filter(s => typeof s === 'number' && isFinite(s)))];
+          const ignoredScanVals = new Set(rawDistinct.filter(t => !chosenReal.has(t)));
 
-            }
+          let warning = "";
+          if (filledScan4.length) {
+            const got = emp.scan - filledScan4.length;
+            warning = `ສະແກນ ${got}/${emp.scan} → ໃຊ້ສະເລ່ຍ: ${filledScan4.map(e => `${e.type} [~${formatMinsToClock(e.time)}]`).join(', ')}`;
+          } else if (broken) {
+            warning = "ສະແກນບໍ່ຄົບ (0.5)";
+          } else if (effectiveRes.isHalfDay) {
+            warning = "ມາເຄິ່ງວັນ (0.5)";
+          } else if (ignoredScanVals.size > 0) {
+            warning = `ສະແກນ ${clusters.length} ຄັ້ງ — ເລືອກອັດຕະໂນມັດ`;
+          }
+
+          presenceMap.set(info.day, { ...row, warning, validCount, dayVal: effectiveRes.dayVal, netM: effectiveRes.netM, clusters, ignoredScanVals, slot: s2,
+            ...(filledScan4.length && { filledScan4 }) });
+
+          if (info.isSunday) {
+            // Sunday attendance tracked but no pay adjustment
+          } else if (holidayMap.has(info.day)) {
+            if (!emp.no_ot) otH += effectiveRes.otH;
+          } else {
+            attendedDays += effectiveRes.dayVal;
+            if (!emp.no_ot) otH += effectiveRes.otH;
+            const payMins = Math.min(emp.scan === 2 ? effectiveRes.netM + BREAK_MINS : effectiveRes.netM, standardMinsPerDay);
+            totalPayMins += payMins;
           }
         }
       }
 
       const absentDates = [];
+      let daysPresent = 0, halfDays = 0; // "present" = he showed up (a half-day still counts as present)
       for (let d = 1; d <= dataTotalDays; d++) {
         const dateObj = new Date(dataYear, dataMonth - 1, d);
         if (dateObj.getDay() === 0) continue;
         if (holidayMap.has(d)) continue; // public holiday — not counted as absent
         const dayLog = presenceMap.get(d);
         if (!dayLog || dayLog.countAsAbsent) absentDates.push(d);
+        else if (dayLog.dayVal > 0) { daysPresent++; if (dayLog.dayVal === 0.5) halfDays++; }
       }
 
       // Holiday credit: only weekday holidays give pay credit (Sunday holidays = already free)
@@ -459,6 +504,8 @@
       return {
         ...emp,
         attended: attendedDays,
+        daysPresent,
+        halfDays,
         absent: absentDates.length,
         otH,
         basePay,
@@ -482,6 +529,9 @@
         workingDays: EXPECTED_DAYS,
         rateDays: RATE_DAYS,
         scanMode: emp.scan,
+        avgSlots: emp.scan === 2
+          ? { amIn: avgInTime, pmOut: avgOutTime }
+          : { amIn: avg4InAM, amOut: avg4OutAM, pmIn: avg4InPM, pmOut: avg4OutPM },
         dataYear,
         dataMonth,
         dataTotalDays,
@@ -652,25 +702,21 @@
           const payMins = emp.scanMode === 2 ? log.netM + BREAK : log.netM;
           const shortMins = Math.max(0, stdMins - payMins);
           if (shortMins > 0) {
-            const clusters = log.clusters || [];
-            const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
-            const filledIn2  = log.filledScan?.type === 'IN'  ? log.filledScan.time : null;
-            const filledOut2 = log.filledScan?.type === 'OUT' ? log.filledScan.time : null;
-            const filledOutPM = log.filledScan4?.find(e => e.type === 'OUT_PM')?.time;
-            const firstScan = filledIn2 ?? (clusters.length > 0 ? clusters[0][0] : null);
-            const lastScan = filledOutPM ?? filledOut2 ?? (lastC ? lastC[lastC.length - 1] : null);
+            const slot = log.slot || {};
             const eveLimit = emp.shift85 ? 1020 : 1110;
-            if (emp.scanMode === 4 && (log.resolvedG !== undefined || clusters.length >= 4)) {
-              const G = log.resolvedG ?? clusters[1][clusters[1].length - 1];
-              const H = log.resolvedH ?? clusters[2][0];
-              const lunchDur = H - G;
+            if (log.dayVal === 0.5) {
+              deductionRows.push({ day: d, reason: 'ມາເຄິ່ງວັນ', shortMins, deduct: Math.round(shortMins * emp.hourlyRate / 60) });
+            } else if (emp.scanMode === 4 && slot.amOut != null && slot.pmIn != null) {
+              const lunchDur = slot.pmIn - slot.amOut;
               const lunchExcess = Math.max(0, lunchDur - BREAK);
-              const lateMorning = firstScan !== null ? Math.max(0, firstScan - 480) : 0;
-              const earlyOut = lastScan !== null ? Math.max(0, eveLimit - lastScan) : 0;
+              const lateMorning = slot.amIn != null ? Math.max(0, slot.amIn - 480) : 0;
+              const earlyOut = slot.pmOut != null ? Math.max(0, eveLimit - slot.pmOut) : 0;
               if (lunchExcess > 0) deductionRows.push({ day: d, reason: `ກິນເຂົ້າສວຍເກີນເວລາ (${lunchDur}ນທ − 40ນທ)`, shortMins: lunchExcess, deduct: Math.round(lunchExcess * emp.hourlyRate / 60) });
               if (lateMorning > 0) deductionRows.push({ day: d, reason: 'ມາຊ້າ', shortMins: lateMorning, deduct: Math.round(lateMorning * emp.hourlyRate / 60) });
               if (earlyOut > 0) deductionRows.push({ day: d, reason: 'ກັບໄວ', shortMins: earlyOut, deduct: Math.round(earlyOut * emp.hourlyRate / 60) });
             } else {
+              const firstScan = slot.amIn ?? slot.pmIn ?? null;
+              const lastScan = slot.pmOut ?? slot.amOut ?? null;
               const parts = [];
               if (firstScan !== null && firstScan > 480) parts.push('ມາຊ້າ');
               if (lastScan !== null && lastScan < eveLimit) parts.push('ກັບໄວ');
@@ -774,13 +820,19 @@
                   <h3 className="font-black text-sm uppercase tracking-widest text-slate-500 border-b pb-2 mb-3">ການເຂົ້າວຽກ</h3>
                   <div className="grid grid-cols-2 gap-2 text-sm mb-3">
                     <div className="flex justify-between bg-emerald-50 rounded-lg px-3 py-2">
-                      <span className="font-bold text-slate-600">ວັນທີ່ມາ <span className="text-[9px] text-emerald-500">(ມາຕົວຈິງ / ຕ້ອງມາ)</span></span>
-                      <span className="font-black text-emerald-700">{emp.attended} / {emp.workingDays} ວັນ</span>
+                      <span className="font-bold text-slate-600">ວັນທີ່ມາ <span className="text-[9px] text-emerald-500">(ມາເຮັດວຽກ / ຕ້ອງມາ)</span></span>
+                      <span className="font-black text-emerald-700">{emp.daysPresent ?? emp.attended} / {emp.workingDays} ວັນ</span>
                     </div>
                     <div className="flex justify-between bg-rose-50 rounded-lg px-3 py-2">
                       <span className="font-bold text-slate-600">ວັນຂາດ <span className="text-[9px] text-rose-400">(ຫັກເງິນ)</span></span>
                       <span className="font-black text-rose-700">{emp.absent} ວັນ</span>
                     </div>
+                    {emp.halfDays > 0 && (
+                      <div className="flex justify-between bg-amber-50 rounded-lg px-3 py-2 col-span-2">
+                        <span className="font-bold text-slate-600">ໃນນັ້ນ ມາເຄິ່ງວັນ <span className="text-[9px] text-amber-500">(ມາວຽກ ແຕ່ຄິດໄລ່ເປັນເຄິ່ງວັນ)</span></span>
+                        <span className="font-black text-amber-700">{emp.halfDays} ວັນ · ຈ່າຍເທົ່າ {Number.isInteger(emp.attended) ? emp.attended : emp.attended.toFixed(1)} ວັນ</span>
+                      </div>
+                    )}
                     <div className="flex justify-between bg-purple-50 rounded-lg px-3 py-2">
                       <span className="font-bold text-slate-600">OT ທັງໝົດ</span>
                       <span className="font-black text-purple-700">{fmtHours(emp.otH)}</span>
@@ -870,12 +922,13 @@
                               <tr key={i} className="border-b border-rose-100">
                                 <td className="py-1 pr-2 font-bold">{r.day}</td>
                                 <td className="py-1 pr-2 font-bold">{r.reason}</td>
-                                <td className="py-1 pr-2 text-right font-mono">{r.shortMins}ນທ</td>
+                                <td className="py-1 pr-2 text-right font-mono">{r.shortMins}ນທ <span className="text-slate-400">({Math.floor(r.shortMins / 60)}:{String(r.shortMins % 60).padStart(2, '0')})</span></td>
                                 <td className="py-1 text-right font-mono text-rose-600 font-black">({fmt(r.deduct)})</td>
                               </tr>
                             ))}
                             <tr className="border-t-2 border-rose-300">
-                              <td colSpan={3} className="py-1 font-black text-right pr-2 text-rose-700">ລວມຫັກທັງໝົດ</td>
+                              <td colSpan={2} className="py-1 font-black text-right pr-2 text-rose-700">ລວມຫັກທັງໝົດ</td>
+                              <td className="py-1 text-right font-mono font-black text-rose-700">{(() => { const tm = deductionRows.reduce((a, r) => a + r.shortMins, 0); return <>{tm}ນທ <span className="text-rose-400">({Math.floor(tm / 60)}:{String(tm % 60).padStart(2, '0')})</span></>; })()}</td>
                               <td className="py-1 text-right font-mono text-rose-700 font-black">({fmt(emp.absentDeduction)})</td>
                             </tr>
                           </tbody>
@@ -974,30 +1027,35 @@
                     </thead>
                     <tbody>
                       {rawRows.map(({ day, dayName, isSun, isHoliday, holidayName, log }) => {
-                        const clusters = log?.clusters || [];
                         const sunHasData = isSun && log && log.validCount > 0;
                         const isAbsent = !isHoliday && !isSun && (!log || log.validCount === 0 || log.countAsAbsent);
                         const rowBg = isHoliday ? 'bg-amber-100' : isSun ? 'bg-amber-50' : isAbsent ? 'bg-rose-50' : day % 2 === 0 ? 'bg-slate-50' : 'bg-white';
                         const skip = isHoliday;
-                        const sunCell = (val) => val != null ? <span className="text-slate-400 italic">{formatMinsToClock(val)}</span> : '—';
+                        const slot = log?.slot || {};
+                        // Render a slip time cell from the actual used slot time (auto-picked or admin-edited)
+                        const tcell = (v) => sunHasData
+                          ? (v != null ? <span className="text-slate-400 italic">{formatMinsToClock(v)}</span> : '—')
+                          : (!skip && !isAbsent && v != null ? formatMinsToClock(v) : '—');
+                        // Don't leak the ✎ "edited by admin" marker onto the printed slip
+                        const noteText = log?.isOverride ? '' : (log?.warning || '');
                         return (
                           <tr key={day} className={`border-b border-slate-100 ${rowBg}`}>
                             <td className="px-2 py-1 font-bold">{day}</td>
                             <td className={`px-2 py-1 font-bold ${isHoliday ? 'text-amber-700' : isSun ? 'text-amber-500' : ''}`}>{dayName}{isHoliday && isSun ? ' 🏖️' : ''}</td>
                             {emp.scanMode === 2 ? (<>
-                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters[0] ? sunCell(clusters[0][0]) : !skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters.length > 1 ? sunCell(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : !skip && !isAbsent && clusters.length > 1 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{tcell(slot.amIn)}</td>
+                              <td className="px-2 py-1 text-center font-mono">{tcell(slot.pmOut)}</td>
                             </>) : (<>
-                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters[0] ? sunCell(clusters[0][0]) : !skip && !isAbsent && clusters[0] ? formatMinsToClock(clusters[0][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{sunHasData && (log?.resolvedG != null || clusters[1]) ? sunCell(log?.resolvedG ?? clusters[1][clusters[1].length-1]) : !skip && !isAbsent && (log?.resolvedG != null || clusters[1]) ? formatMinsToClock(log?.resolvedG ?? clusters[1][clusters[1].length-1]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{sunHasData && (log?.resolvedH != null || clusters.length >= 3) ? sunCell(log?.resolvedH ?? clusters[clusters.length-2][0]) : !skip && !isAbsent && (log?.resolvedH != null || clusters.length >= 3) ? formatMinsToClock(log?.resolvedH ?? clusters[clusters.length-2][0]) : '—'}</td>
-                              <td className="px-2 py-1 text-center font-mono">{sunHasData && clusters.length >= 2 ? sunCell(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : !skip && !isAbsent && clusters.length >= 2 ? formatMinsToClock(clusters[clusters.length-1][clusters[clusters.length-1].length-1]) : '—'}</td>
+                              <td className="px-2 py-1 text-center font-mono">{tcell(slot.amIn)}</td>
+                              <td className="px-2 py-1 text-center font-mono">{tcell(slot.amOut)}</td>
+                              <td className="px-2 py-1 text-center font-mono">{tcell(slot.pmIn)}</td>
+                              <td className="px-2 py-1 text-center font-mono">{tcell(slot.pmOut)}</td>
                             </>)}
                             <td className="px-2 py-1 text-right font-mono font-black">
                               {isHoliday ? <span className="text-amber-600">🏖️</span> : isSun ? <span className="text-amber-500">ອາທິດ</span> : isAbsent ? <span className="text-rose-500">ຂາດ</span> : fmtHours(minsToH(log.netM))}
                             </td>
                             <td className="px-2 py-1 text-[8px]">
-                              {isHoliday ? <span className="text-amber-700 font-black not-italic">{holidayName}</span> : sunHasData ? <span className="text-slate-400 italic">ບໍ່ນັບ</span> : <span className="text-slate-400 italic">{log?.warning || ''}</span>}
+                              {isHoliday ? <span className="text-amber-700 font-black not-italic">{holidayName}</span> : sunHasData ? <span className="text-slate-400 italic">ບໍ່ນັບ</span> : <span className="text-slate-400 italic">{noteText}</span>}
                             </td>
                           </tr>
                         );
@@ -1143,6 +1201,26 @@
       const [newMonthDraft, setNewMonthDraft] = useState(null);
       const [missingEmps, setMissingEmps] = useState([]);
 
+      // ── Manual per-day scan overrides: { [empCode]: { [dateStr]: slot } } ──
+      // Persisted via the generic /api/config endpoint (no DB schema change).
+      const [overrides, setOverrides] = useState(() => {
+        try { return JSON.parse(localStorage.getItem("ssc_overrides") || "{}"); } catch { return {}; }
+      });
+      const [editDayNum, setEditDayNum] = useState(null); // day being edited in the Raw Data modal
+      const [customCell, setCustomCell] = useState(null); // "day:slot" currently in type-your-own mode
+      const persistOverrides = (next) => {
+        setOverrides(next);
+        try { localStorage.setItem("ssc_overrides", JSON.stringify(next)); } catch {}
+        apiCall('POST', '/api/config/overrides', { value: next });
+      };
+      // Set/clear one slot for a given employee+date, then live-recompute (via effect on `overrides`).
+      const setDayOverride = (code, dateStr, slot) => {
+        const next = { ...overrides, [code]: { ...(overrides[code] || {}) } };
+        if (slot === null) { delete next[code][dateStr]; if (!Object.keys(next[code]).length) delete next[code]; }
+        else next[code][dateStr] = slot;
+        persistOverrides(next);
+      };
+
       // Auto-save to cloud + localStorage (skip during initial load)
       useEffect(() => {
         if (!initialLoadDone.current) return;
@@ -1169,11 +1247,17 @@
           apiCall('GET', '/api/config/monthCfg'),
           apiCall('GET', '/api/sessions'),
           apiCall('GET', '/api/users'),
-        ]).then(async ([empsRes, cfgRes, sessionsRes, usersRes]) => {
+          apiCall('GET', '/api/config/overrides'),
+        ]).then(async ([empsRes, cfgRes, sessionsRes, usersRes, ovRes]) => {
           if (empsRes.ok && empsRes.data) { setEmployees(empsRes.data); localStorage.setItem("ssc_employees", JSON.stringify(empsRes.data)); }
           if (cfgRes.ok && cfgRes.data)   { setMonthCfg(cfgRes.data);  localStorage.setItem("ssc_monthCfg",  JSON.stringify(cfgRes.data));  }
           if (sessionsRes.ok && sessionsRes.data) { setSessions(sessionsRes.data); localStorage.setItem("ssc_sessions", JSON.stringify(sessionsRes.data)); }
           if (usersRes.ok && usersRes.data) setAuthUsers(usersRes.data);
+          // Load saved manual overrides (cloud primary, localStorage fallback)
+          const ov = (ovRes && ovRes.ok && ovRes.data && typeof ovRes.data === 'object') ? ovRes.data
+                   : (() => { try { return JSON.parse(localStorage.getItem("ssc_overrides") || "{}"); } catch { return {}; } })();
+          setOverrides(ov);
+          try { localStorage.setItem("ssc_overrides", JSON.stringify(ov)); } catch {}
           setCloudSync(empsRes.ok);
           // Restore active work from DB (primary) then localStorage (fallback)
           const activeRes = await apiCall('GET', `/api/active-work?u=${encodeURIComponent(authSession.username)}`);
@@ -1187,7 +1271,7 @@
             emps.forEach(emp => {
               const empData = activeData[emp.code] || [];
               if (empData.some(row => row.scans.some(s => s !== null)))
-                res[emp.code] = computeSalary(emp, empData, cfg);
+                res[emp.code] = computeSalary(emp, empData, cfg, ov[emp.code]);
             });
             if (Object.keys(res).length > 0) { setResults(res); setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ"); loadedResults = true; setTab("results"); }
           }
@@ -1202,7 +1286,7 @@
             mergedEmps.forEach(emp => {
               const data = latest.scanData[emp.code] || [];
               if (data.some(row => row.scans.some(s => s !== null)))
-                res[emp.code] = computeSalary(emp, data, latest.monthCfg);
+                res[emp.code] = computeSalary(emp, data, latest.monthCfg, ov[emp.code]);
             });
             if (Object.keys(res).length > 0) {
               setResults(res);
@@ -1223,7 +1307,7 @@
             emps.forEach(emp => {
               const empData = data[emp.code] || [];
               if (empData.some(row => row.scans.some(s => s !== null)))
-                res[emp.code] = computeSalary(emp, empData, cfg);
+                res[emp.code] = computeSalary(emp, empData, cfg, overrides[emp.code]);
             });
             if (Object.keys(res).length > 0) { setResults(res); setStatus("✅ ໂຫລດຂໍ້ມູນທີ່ save ໄວ້ແລ້ວ"); }
           }
@@ -1233,17 +1317,17 @@
         });
       }, [authSession?.username]); // re-runs when user logs in or switches account
 
-      // Recompute results in real-time whenever employees or monthCfg changes
+      // Recompute results in real-time whenever employees, monthCfg, or manual overrides change
       useEffect(() => {
         if (!combinedDataRef.current) return;
         const res = {};
         employees.forEach(emp => {
           const data = combinedDataRef.current[emp.code] || [];
           const hasValidScans = data.some(row => row.scans.some(s => s !== null));
-          if (hasValidScans) res[emp.code] = computeSalary(emp, data, monthCfg);
+          if (hasValidScans) res[emp.code] = computeSalary(emp, data, monthCfg, overrides[emp.code]);
         });
         setResults(res);
-      }, [employees, monthCfg]);
+      }, [employees, monthCfg, overrides]);
 
       // Keep open modals in sync when results recompute
       useEffect(() => {
@@ -1316,7 +1400,10 @@
             const rawDate = r[4]?.toString().trim();
             if (!rawDate) return;
             const dateStr = toISO(rawDate, slashFmt); // normalised to YYYY-MM-DD
-            const scans = Array.from({ length: 5 }, (_, j) => parseTime(r[5 + j]?.toString() || ""));
+            // Read ALL punch columns (was capped at 5) and drop exact-duplicate times, so
+            // heavy/panic double-scanning never pushes the real check-out off the end of the row.
+            const rawScans = r.slice(5).map(c => parseTime(c?.toString() || "")).filter(t => t !== null);
+            const scans = [...new Set(rawScans)].sort((a, b) => a - b);
             if (!combinedData[code].some(row => row.dateStr === dateStr))
               combinedData[code].push({ dateStr, scans });
           });
@@ -1350,7 +1437,7 @@
         allEmps.forEach(emp => {
           const data = combinedData[emp.code] || [];
           const hasValidScans = data.some(row => row.scans.some(s => s !== null));
-          if (hasValidScans) res[emp.code] = computeSalary(emp, data, detectedCfg);
+          if (hasValidScans) res[emp.code] = computeSalary(emp, data, detectedCfg, overrides[emp.code]);
         });
         setResults(res);
         // Save active work to DB (no more localStorage-only)
@@ -1454,7 +1541,7 @@
         mergedEmps.forEach(emp => {
           const data = session.scanData[emp.code] || [];
           if (data.some(row => row.scans.some(s => s !== null)))
-            res[emp.code] = computeSalary(emp, data, session.monthCfg);
+            res[emp.code] = computeSalary(emp, data, session.monthCfg, overrides[emp.code]);
         });
         const noData = mergedEmps.filter(e => !res[e.code]);
         setMissingEmps(noData);
@@ -1911,11 +1998,11 @@
                 <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
                   <div className="bg-slate-800 p-5 text-white font-black uppercase tracking-widest text-xs">📋 Manual Adjustment List</div>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-[11px]">
+                    <table className="compact-tbl w-full text-[11px] whitespace-nowrap">
                       <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase">
                         <tr>
-                          <th className="p-4">ID</th>
-                          <th className="p-4 text-left">ຊື່ພະນັກງານ</th>
+                          <th className="p-4 sticky left-0 z-20 bg-slate-50 w-[44px]">ID</th>
+                          <th className="p-4 text-left sticky left-[44px] z-20 bg-slate-50 shadow-[6px_0_8px_-6px_rgba(0,0,0,0.15)]">ຊື່ພະນັກງານ</th>
                           <th className="p-4 text-center text-sky-600">Scan Mode</th>
                           <th className="p-4 text-center text-sky-600">ຊິຟ</th>
                           <th className="p-4 text-right">ຖານເງິນເດືອນ</th>
@@ -1935,7 +2022,7 @@
                           <th className="p-4 text-center text-emerald-600">ໂບນັດ OT</th>
                           <th className="p-4 text-center text-blue-600">ເພີ່ມຄືນ (ຊມ)</th>
                           <th className="p-4 text-left text-blue-600">ເຫດຜົນ</th>
-                          <th className="p-4 text-center">ຈັດການ</th>
+                          <th className="p-4 text-center sticky right-0 z-20 bg-slate-50 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.15)]">ຈັດການ</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1943,9 +2030,9 @@
                           const isEditing = editCode === emp.code;
                           const update = (field, val) => setEmployees(prev => prev.map(e => e.code === emp.code ? { ...e, [field]: val } : e));
                           return (
-                          <tr key={emp.code} className={`border-t transition-colors ${isEditing ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
-                            <td className="p-4 text-center font-bold text-slate-400">{emp.code}</td>
-                            <td className="p-4 font-black">
+                          <tr key={emp.code} className={`border-t transition-colors group ${isEditing ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
+                            <td className={`p-4 text-center font-bold text-slate-400 sticky left-0 z-10 w-[44px] ${isEditing ? 'bg-blue-50' : 'bg-white'}`}>{emp.code}</td>
+                            <td className={`p-4 font-black sticky left-[44px] z-10 shadow-[6px_0_8px_-6px_rgba(0,0,0,0.12)] ${isEditing ? 'bg-blue-50' : 'bg-white'}`}>
                               {isEditing
                                 ? <input className="p-1 border rounded w-full font-bold" value={emp.name} onChange={e => update('name', e.target.value)} />
                                 : emp.name}
@@ -2011,7 +2098,7 @@
                                 ? <input type="text" className="p-1 border rounded w-36 text-[11px] outline-none" placeholder="ເຫດຜົນ..." value={emp.addback_reason || ''} onChange={e => update('addback_reason', e.target.value)} />
                                 : emp.addback_reason || ''}
                             </td>
-                            <td className="p-4 text-center">
+                            <td className={`p-4 text-center sticky right-0 z-10 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)] ${isEditing ? 'bg-blue-50' : 'bg-white group-hover:bg-slate-50'}`}>
                               <button onClick={() => setEditCode(isEditing ? null : emp.code)}
                                 className={`px-4 py-1 rounded-lg text-[10px] font-black shadow-sm ${isEditing ? 'bg-emerald-600 text-white' : 'bg-amber-100 text-amber-600'}`}>
                                 {isEditing ? 'SAVE' : 'EDIT'}
@@ -2091,7 +2178,7 @@
                 {(() => { const anyOtBonus = employees.some(e => e.ot_bonus_enabled !== false); return (
                 <div className="bg-white rounded-[40px] border shadow-2xl overflow-hidden">
                   <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
-                  <table className="min-w-full text-[10px] border-collapse whitespace-nowrap">
+                  <table className="compact-tbl min-w-full text-[10px] border-collapse whitespace-nowrap">
                     <thead className="bg-slate-900 text-white font-black sticky top-0 z-20">
                       <tr>
                         <th className="px-4 py-3 text-left border-r border-white/5 uppercase tracking-widest whitespace-nowrap sticky left-0 z-30 bg-slate-900">ລາຍຊື່ (ກົດເບິ່ງ Raw Data)</th>
@@ -2104,8 +2191,8 @@
                         <th className="px-3 py-3 border-r border-white/5 text-right text-purple-300">ພິເສດ</th>
                         {anyOtBonus && <th className="px-3 py-3 border-r border-white/5 text-right text-emerald-300">ໂບນັດ OT</th>}
                         <th className="px-3 py-3 border-r border-white/5 text-right text-rose-300">ຫັກເບີກ</th>
-                        <th className="px-4 py-3 bg-slate-800 font-black text-center text-blue-300 text-xs tracking-widest uppercase">NET PAY</th>
-                        <th className="px-3 py-3 bg-slate-700 text-center text-slate-300 text-xs uppercase">Slip</th>
+                        <th className="px-4 py-3 bg-slate-800 font-black text-center text-blue-300 text-xs tracking-widest uppercase sticky right-[74px] z-30 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.4)]">NET PAY</th>
+                        <th className="px-3 py-3 bg-slate-700 text-center text-slate-300 text-xs uppercase sticky right-0 z-30 w-[74px]">Slip</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2118,7 +2205,10 @@
                               <span className={`no-underline text-[8px] font-black px-1.5 py-0.5 rounded ${r.scanMode === 2 ? 'bg-sky-100 text-sky-600' : 'bg-violet-100 text-violet-600'}`}>{r.scanMode}S</span>
                             </div>
                           </td>
-                          <td className="px-3 py-2 text-center font-black text-slate-500 border-r font-mono">{Number.isInteger(r.attended) ? r.attended : r.attended.toFixed(1)}/{r.workingDays}</td>
+                          <td className="px-3 py-2 text-center font-black text-slate-500 border-r font-mono">
+                            {(r.daysPresent ?? r.attended)}/{r.workingDays}
+                            {r.halfDays > 0 && <div className="text-[8px] text-amber-500 font-bold" title={`ມາເຄິ່ງວັນ ${r.halfDays} ວັນ — ຄິດໄລ່ຈ່າຍ ${Number.isInteger(r.attended) ? r.attended : r.attended.toFixed(1)} ວັນ`}>{r.halfDays} ເຄິ່ງວັນ</div>}
+                          </td>
                           <td className="px-3 py-2 text-center bg-rose-50/50 border-r w-[110px] whitespace-normal">
                             <div className="font-black text-rose-600">{r.absent} ວັນ</div>
                             {r.absentDates.length > 0 && (
@@ -2157,8 +2247,8 @@
                           <td className="px-3 py-2 text-right font-black font-mono text-rose-600 border-r bg-rose-50/20">
                             {(r.advance || 0) > 0 ? <div><div>({fmt(r.advance)})</div>{r.advance_note && <div className="text-[8px] font-normal text-rose-400">{r.advance_note}</div>}</div> : "—"}
                           </td>
-                          <td className={`px-4 py-2 text-right font-black text-[13px] bg-slate-50 group-hover:bg-blue-50 transition-colors font-mono ${r.netPay < 0 ? 'text-rose-600' : 'text-blue-800'}`}>{fmt(r.netPay)}</td>
-                          <td className="px-3 py-2 text-center bg-slate-700/5">
+                          <td className={`px-4 py-2 text-right font-black text-[13px] group-hover:bg-blue-50 transition-colors font-mono sticky right-[74px] z-10 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.15)] ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50'} ${r.netPay < 0 ? 'text-rose-600' : 'text-blue-800'}`}>{fmt(r.netPay)}</td>
+                          <td className={`px-3 py-2 text-center sticky right-0 z-10 w-[74px] ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
                             <button onClick={() => setSlipEmp(r)} title="ສ້າງໃບແຈ້ງເງິນເດືອນ"
                               className="bg-blue-600 hover:bg-blue-700 text-white text-[9px] font-black px-2 py-1 rounded-lg shadow transition-all active:scale-95 whitespace-nowrap">
                               📄 Slip
@@ -2176,8 +2266,8 @@
                         <td className="px-3 py-3 text-right text-purple-300 font-mono">{fmt(totals.specialBonus)}</td>
                         {anyOtBonus && <td className="px-3 py-3 text-right text-emerald-400 font-mono">{fmt(totals.otBonus)}</td>}
                         <td className="px-3 py-3 text-right text-rose-400 font-mono">({fmt(totals.advance)})</td>
-                        <td className="px-4 py-3 text-right text-base text-blue-300 bg-slate-800 font-mono">{fmt(totals.netPay)}</td>
-                        <td className="px-3 py-3 bg-slate-700"></td>
+                        <td className="px-4 py-3 text-right text-base text-blue-300 bg-slate-800 font-mono sticky right-[74px] z-10 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.4)]">{fmt(totals.netPay)}</td>
+                        <td className="px-3 py-3 bg-slate-700 sticky right-0 z-10 w-[74px]"></td>
                       </tr>
                     </tfoot>
                   </table>
@@ -2207,9 +2297,12 @@
                     <h2 className="text-2xl font-black">{selectedEmp.name}</h2>
                     <p className="text-blue-300 text-xs font-bold uppercase tracking-widest">Raw Data Check — {selectedEmp.scanMode}-Scan{selectedEmp.shift85 ? ' (8–17)' : selectedEmp.scanMode === 2 ? ' (8–18:30)' : ''}</p>
                   </div>
-                  <button onClick={() => setSelectedEmp(null)} className="text-3xl hover:scale-110 transition-transform bg-white/10 w-12 h-12 rounded-full flex items-center justify-center">✕</button>
+                  <button onClick={() => { setSelectedEmp(null); setEditDayNum(null); setCustomCell(null); }} className="text-3xl hover:scale-110 transition-transform bg-white/10 w-12 h-12 rounded-full flex items-center justify-center">✕</button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-8">
+                  <div className="mb-4 text-[11px] text-slate-500 font-bold bg-slate-50 rounded-xl px-4 py-2 border border-slate-100">
+                    💡 ຖ້າພະນັກງານສະແກນຫຼາຍເທື່ອ ຫຼື ລະບົບຄຳນວນຜິດ — ກົດ <span className="text-purple-600 font-black">✎ ແກ້ໄຂ</span> ເພື່ອເລືອກ ຫຼື ພິມເວລາທີ່ຖືກຕ້ອງເອງ
+                  </div>
                   <table className="w-full text-xs text-left border-collapse">
                     <thead className="bg-slate-100 text-[10px] font-black uppercase text-slate-500">
                       <tr>
@@ -2218,6 +2311,7 @@
                         <th className="p-4 border-b">ເວລາສຸດທິ</th>
                         <th className="p-4 border-b">Status</th>
                         <th className="p-4 border-b text-center">Val</th>
+                        <th className="p-4 border-b text-center">ແກ້ໄຂ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2228,15 +2322,80 @@
                         const isHoliday = !!holidayEntry && !isSun;
                         const holidayName = isHoliday && typeof holidayEntry === 'object' && holidayEntry.name ? holidayEntry.name : 'ວັນພັກ';
                         const isDayOff = isSun || isHoliday;
+                        const scanMode = selectedEmp.scanMode;
+                        const yy = selectedEmp.dataYear || monthCfg.year, mm = selectedEmp.dataMonth || monthCfg.month;
+                        const dateStr = `${yy}-${String(mm).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                        const ovDay = overrides[selectedEmp.code] && overrides[selectedEmp.code][dateStr];
+                        const rawForDay = [...new Set((log?.scans || []).filter(x => typeof x === 'number' && isFinite(x)))].sort((a, b) => a - b);
+                        const isEditing = editDayNum === day;
+                        // Effective slot values shown in the editor: existing override, else auto-suggested
+                        const eff = (ovDay && !ovDay.absent) ? ovDay : suggestSlots(rawForDay, scanMode);
+                        const hm = m => (typeof m === 'number' && isFinite(m)) ? formatMinsToClock(m) : "";
+                        const commit = (patch) => {
+                          const base = (ovDay && !ovDay.absent) ? ovDay : suggestSlots(rawForDay, scanMode);
+                          const merged = scanMode === 2
+                            ? { amIn: base.amIn ?? null, pmOut: base.pmOut ?? null, ...patch }
+                            : { amIn: base.amIn ?? null, amOut: base.amOut ?? null, pmIn: base.pmIn ?? null, pmOut: base.pmOut ?? null, ...patch };
+                          setDayOverride(selectedEmp.code, dateStr, merged);
+                        };
+                        const useAvg = () => {
+                          const a = selectedEmp.avgSlots || {};
+                          const patch = {};
+                          if (scanMode === 2) {
+                            if (eff.amIn == null && a.amIn != null) patch.amIn = a.amIn;
+                            if (eff.pmOut == null && a.pmOut != null) patch.pmOut = a.pmOut;
+                          } else {
+                            ['amIn', 'amOut', 'pmIn', 'pmOut'].forEach(k => { if (eff[k] == null && a[k] != null) patch[k] = a[k]; });
+                          }
+                          commit(patch);
+                        };
+                        // A slot picker: 24h dropdown of the day's real scans + average + blank + type-your-own
+                        const slotField = (label, key) => {
+                          const opts = rawForDay;
+                          const avgVal = (selectedEmp.avgSlots || {})[key];
+                          const cur = eff[key] ?? null;
+                          const cellId = `${day}:${key}`;
+                          const inList = cur != null && opts.includes(cur);
+                          const isAvg = cur != null && avgVal != null && cur === avgVal && !inList;
+                          const selVal = (customCell === cellId) ? 'custom' : (cur == null ? '' : inList ? String(cur) : isAvg ? 'avg' : 'custom');
+                          const onSel = (v) => {
+                            if (v === 'custom') { setCustomCell(cellId); return; }
+                            setCustomCell(null);
+                            if (v === '') commit({ [key]: null });
+                            else if (v === 'avg') commit({ [key]: avgVal });
+                            else commit({ [key]: Number(v) });
+                          };
+                          return (
+                            <label className="text-[10px] font-black text-slate-600">{label}<br/>
+                              <select value={selVal} onChange={e => onSel(e.target.value)} className="mt-1 border-2 border-slate-200 rounded-lg px-2 py-1 font-mono text-xs focus:border-purple-500 outline-none bg-white">
+                                <option value="">— ວ່າງ</option>
+                                {opts.map(t => <option key={t} value={t}>{formatMinsToClock(t)}</option>)}
+                                {avgVal != null && <option value="avg">~ ສະເລ່ຍ {formatMinsToClock(avgVal)}</option>}
+                                <option value="custom">ພິມເອງ…</option>
+                              </select>
+                              {selVal === 'custom' && (
+                                <input type="text" inputMode="numeric" placeholder="HH:MM" defaultValue={cur != null ? formatMinsToClock(cur) : ''}
+                                  onChange={e => { const m = parseHM(e.target.value); if (m != null) commit({ [key]: m }); }}
+                                  className="mt-1 ml-1 w-16 border-2 border-purple-300 rounded-lg px-2 py-1 font-mono text-xs focus:border-purple-500 outline-none"/>
+                              )}
+                            </label>
+                          );
+                        };
                         return (
-                          <tr key={day} className={`border-b hover:bg-slate-50/50 ${isSun ? 'bg-amber-50/30' : ''} ${isHoliday ? 'bg-blue-50/40' : ''} ${(!log || log.validCount === 0 || log?.countAsAbsent) && !isDayOff ? 'bg-rose-50/80' : ''}`}>
+                          <React.Fragment key={day}>
+                          <tr className={`border-b hover:bg-slate-50/50 ${ovDay ? 'bg-purple-50/60' : ''} ${isSun ? 'bg-amber-50/30' : ''} ${isHoliday ? 'bg-blue-50/40' : ''} ${(!log || log.validCount === 0 || log?.countAsAbsent) && !isDayOff && !ovDay ? 'bg-rose-50/80' : ''}`}>
                             <td className="p-4 font-black">
                               {day}{getOrdinal(day)}
                               {isSun && <span className="text-amber-500 font-bold ml-1 text-[9px] uppercase">ວັນອາທິດ</span>}
                               {isHoliday && <span className="text-blue-500 font-bold ml-1 text-[9px] uppercase">ພັກ</span>}
                             </td>
                             <td className="p-4 font-mono font-black text-[10px]">
-                              {log && log.validCount > 0
+                              {log?.isOverride
+                                ? <span>
+                                    <span className="text-purple-700 font-black" title="ແກ້ໄຂເອງ">✎ {renderSlots(log.override, scanMode)}</span>
+                                    {rawForDay.length > 0 && <span className="text-slate-400 ml-2 text-[9px]">raw: {rawForDay.map(formatMinsToClock).join(' · ')}</span>}
+                                  </span>
+                                : log && log.validCount > 0
                                 ? log.clusters
                                   ? <span className={isSun ? 'opacity-40' : ''}>
                                       {log.clusters.flatMap((cluster, ci) =>
@@ -2264,19 +2423,56 @@
                                 : "---"}
                             </td>
                             <td className="p-4 font-mono font-black text-slate-600">
-                              {log && log.validCount > 0 && !log.countAsAbsent && !isSun ? fmtHours(minsToH(log.netM)) : "—"}
+                              {log && !log.countAsAbsent && !isSun && (log.isOverride || log.validCount > 0) ? fmtHours(minsToH(log.netM)) : "—"}
                             </td>
                             <td className="p-4">
-                              {(!log || log.validCount === 0) && !isDayOff && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
-                              {log?.countAsAbsent && <span className="bg-rose-500 text-white px-2 py-0.5 rounded-lg font-black text-[9px]">ສະແກນດຽວ — ຂາດ</span>}
-                              {log?.warning && !log.countAsAbsent && <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] border ${log.warning.includes('0.5') ? 'bg-blue-100 text-blue-700 border-blue-200' : (log.filledScan || log.filledScan4) ? 'bg-sky-100 text-sky-700 border-sky-200' : 'bg-amber-100 text-amber-700 border-amber-200'}`}>{log.warning}</span>}
-                              {log && log.validCount > 0 && !log.warning && !isDayOff && <span className="text-emerald-600 font-black text-[9px]">✅ OK</span>}
+                              {(!log || log.validCount === 0) && !isDayOff && !log?.isOverride && <span className="bg-rose-600 text-white px-2 py-0.5 rounded-lg font-black text-[9px] uppercase">ABSENT</span>}
+                              {log?.isOverride
+                                ? <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] border ${log.countAsAbsent ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-purple-100 text-purple-700 border-purple-300'}`}>{log.warning}</span>
+                                : <>
+                                    {log?.countAsAbsent && <span className="bg-rose-500 text-white px-2 py-0.5 rounded-lg font-black text-[9px]">ສະແກນດຽວ — ຂາດ</span>}
+                                    {log?.warning && !log.countAsAbsent && <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] border ${log.warning.includes('0.5') ? 'bg-blue-100 text-blue-700 border-blue-200' : (log.filledScan || log.filledScan4) ? 'bg-sky-100 text-sky-700 border-sky-200' : 'bg-amber-100 text-amber-700 border-amber-200'}`}>{log.warning}</span>}
+                                    {log && log.validCount > 0 && !log.warning && !isDayOff && <span className="text-emerald-600 font-black text-[9px]">✅ OK</span>}
+                                  </>}
                               {isSun && <span className="text-amber-500 font-black text-[9px]">ວັນອາທິດ</span>}
                               {isSun && log && log.validCount > 0 && <span className="text-slate-400 font-black text-[9px] ml-1">ບໍ່ນັບ</span>}
                               {isHoliday && <span className="text-blue-600 font-black text-[9px]">{holidayName}</span>}
                             </td>
-                            <td className="p-4 text-center font-black text-purple-600 font-mono">{isDayOff ? '—' : log ? log.dayVal.toFixed(1) : '0'}</td>
+                            <td className="p-4 text-center font-black text-purple-600 font-mono">{isDayOff ? '—' : (log && (log.isOverride || log.validCount > 0)) ? log.dayVal.toFixed(1) : '0'}</td>
+                            <td className="p-4 text-center">
+                              {!isDayOff && (
+                                <button onClick={() => { setEditDayNum(isEditing ? null : day); setCustomCell(null); }}
+                                  className={`text-[10px] font-black px-2 py-1 rounded-lg border transition-colors ${ovDay ? 'bg-purple-100 text-purple-700 border-purple-300' : isEditing ? 'bg-slate-800 text-white border-slate-800' : 'text-slate-400 border-slate-200 hover:bg-slate-100'}`}>
+                                  {ovDay ? '✎ ແກ້ແລ້ວ' : '✎'}
+                                </button>
+                              )}
+                            </td>
                           </tr>
+                          {isEditing && !isDayOff && (
+                            <tr className="bg-purple-50/40">
+                              <td colSpan={6} className="p-5 border-b">
+                                <div className="flex flex-wrap items-end gap-4">
+                                  <div className="text-xs font-black text-purple-800">✎ ວັນທີ {day}{getOrdinal(day)}
+                                    <div className="text-[9px] text-slate-500 font-bold mt-0.5">ສະແກນຕົວຈິງ: {rawForDay.length ? rawForDay.map(formatMinsToClock).join(' · ') : '(ບໍ່ມີ)'}</div>
+                                  </div>
+                                  {scanMode === 2 ? (
+                                    <>{slotField('ເຂົ້າ', 'amIn')}{slotField('ອອກ', 'pmOut')}</>
+                                  ) : (
+                                    <>{slotField('ເຂົ້າເຊົ້າ', 'amIn')}{slotField('ອອກທ່ຽງ', 'amOut')}{slotField('ເຂົ້າບ່າຍ', 'pmIn')}{slotField('ອອກແລງ', 'pmOut')}</>
+                                  )}
+                                  <div className="flex flex-wrap gap-2">
+                                    <button onClick={() => { setCustomCell(null); useAvg(); }} className="text-[10px] font-black px-3 py-2 rounded-lg bg-sky-100 text-sky-700 border border-sky-200 hover:bg-sky-200">ຕື່ມຄ່າສະເລ່ຍ</button>
+                                    {scanMode !== 2 && <button onClick={() => { setCustomCell(null); commit({ pmIn: null, pmOut: null }); }} className="text-[10px] font-black px-3 py-2 rounded-lg bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200">ເຄິ່ງເຊົ້າ</button>}
+                                    {scanMode !== 2 && <button onClick={() => { setCustomCell(null); commit({ amIn: null, amOut: null }); }} className="text-[10px] font-black px-3 py-2 rounded-lg bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200">ເຄິ່ງບ່າຍ</button>}
+                                    <button onClick={() => { setCustomCell(null); setDayOverride(selectedEmp.code, dateStr, { absent: true }); }} className="text-[10px] font-black px-3 py-2 rounded-lg bg-rose-100 text-rose-700 border border-rose-200 hover:bg-rose-200">ຂາດ</button>
+                                    <button onClick={() => { setCustomCell(null); setDayOverride(selectedEmp.code, dateStr, null); }} className="text-[10px] font-black px-3 py-2 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200">ຄືນຄ່າອັດຕະໂນມັດ</button>
+                                    <button onClick={() => { setEditDayNum(null); setCustomCell(null); }} className="text-[10px] font-black px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">ແລ້ວ</button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
@@ -2300,21 +2496,17 @@
                         const payMins = selectedEmp.scanMode === 2 ? log.netM + BREAK : log.netM;
                         const shortMins = Math.max(0, stdMins - payMins);
                         if (shortMins > 0) {
-                          const clusters = log.clusters || [];
-                          const lastC = clusters.length > 0 ? clusters[clusters.length - 1] : null;
-                          const filledIn2  = log.filledScan?.type === 'IN'  ? log.filledScan.time : null;
-                          const filledOut2 = log.filledScan?.type === 'OUT' ? log.filledScan.time : null;
-                          const filledOutPM = log.filledScan4?.find(e => e.type === 'OUT_PM')?.time;
-                          const firstScan = filledIn2 ?? (clusters.length > 0 ? clusters[0][0] : null);
-                          const lastScan = filledOutPM ?? filledOut2 ?? (lastC ? lastC[lastC.length - 1] : null);
+                          const slot = log.slot || {};
+                          const firstScan = slot.amIn ?? slot.pmIn ?? null;
+                          const lastScan  = slot.pmOut ?? slot.amOut ?? null;
                           const eveLimit = selectedEmp.shift85 ? 1020 : 1110;
-                          if (selectedEmp.scanMode === 4 && (log.resolvedG !== undefined || clusters.length >= 4)) {
-                            const G = log.resolvedG ?? clusters[1][clusters[1].length - 1];
-                            const H = log.resolvedH ?? clusters[2][0];
-                            const lunchDur = H - G;
+                          if (log.dayVal === 0.5) {
+                            rows.push({ day: d, reason: 'ມາເຄິ່ງວັນ', shortMins, deduct: Math.round(shortMins * selectedEmp.hourlyRate / 60) });
+                          } else if (selectedEmp.scanMode === 4 && slot.amOut != null && slot.pmIn != null) {
+                            const lunchDur = slot.pmIn - slot.amOut;
                             const lunchExcess = Math.max(0, lunchDur - BREAK);
-                            const lateMorning = firstScan !== null ? Math.max(0, firstScan - 480) : 0;
-                            const earlyOut = lastScan !== null ? Math.max(0, eveLimit - lastScan) : 0;
+                            const lateMorning = slot.amIn != null ? Math.max(0, slot.amIn - 480) : 0;
+                            const earlyOut = slot.pmOut != null ? Math.max(0, eveLimit - slot.pmOut) : 0;
                             if (lunchExcess > 0) rows.push({ day: d, reason: `ກິນເຂົ້າສວຍເກີນເວລາ (${lunchDur}ນທ − 40ນທ)`, shortMins: lunchExcess, deduct: Math.round(lunchExcess * selectedEmp.hourlyRate / 60) });
                             if (lateMorning > 0) rows.push({ day: d, reason: 'ມາຊ້າ', shortMins: lateMorning, deduct: Math.round(lateMorning * selectedEmp.hourlyRate / 60) });
                             if (earlyOut > 0) rows.push({ day: d, reason: 'ກັບໄວ', shortMins: earlyOut, deduct: Math.round(earlyOut * selectedEmp.hourlyRate / 60) });
@@ -2344,12 +2536,13 @@
                               <tr key={i} className="border-b border-rose-100">
                                 <td className="py-1.5 pr-3 font-bold">{r.day}</td>
                                 <td className="py-1.5 pr-3 font-bold">{r.reason}</td>
-                                <td className="py-1.5 pr-3 text-right font-mono">{r.shortMins}ນທ</td>
+                                <td className="py-1.5 pr-3 text-right font-mono">{r.shortMins}ນທ <span className="text-slate-400">({Math.floor(r.shortMins / 60)}:{String(r.shortMins % 60).padStart(2, '0')})</span></td>
                                 <td className="py-1.5 text-right font-mono text-rose-600 font-black">({fmt(r.deduct)})</td>
                               </tr>
                             ))}
                             <tr className="border-t-2 border-rose-300">
-                              <td colSpan={3} className="py-2 font-black text-right pr-3 text-rose-700">ລວມຫັກທັງໝົດ</td>
+                              <td colSpan={2} className="py-2 font-black text-right pr-3 text-rose-700">ລວມຫັກທັງໝົດ</td>
+                              <td className="py-2 text-right font-mono font-black text-rose-700">{(() => { const tm = rows.reduce((a, r) => a + r.shortMins, 0); return <>{tm}ນທ <span className="text-rose-400">({Math.floor(tm / 60)}:{String(tm % 60).padStart(2, '0')})</span></>; })()}</td>
                               <td className="py-2 text-right font-mono text-rose-700 font-black">({fmt(selectedEmp.absentDeduction)})</td>
                             </tr>
                           </tbody>
