@@ -1243,6 +1243,7 @@
       const [showNewMonth, setShowNewMonth] = useState(false);
       const [newMonthDraft, setNewMonthDraft] = useState(null);
       const [missingEmps, setMissingEmps] = useState([]);
+      const [newEmps, setNewEmps] = useState([]);   // employees auto-added from the latest upload
 
       // ── Manual per-day scan overrides: { [empCode]: { [dateStr]: slot } } ──
       // Persisted via the generic /api/config endpoint (no DB schema change).
@@ -1314,11 +1315,25 @@
           // Restore active work from DB (primary) then localStorage (fallback)
           const activeRes = await apiCall('GET', `/api/active-work?u=${encodeURIComponent(authSession.username)}`);
           const activeData = activeRes.ok && activeRes.data ? activeRes.data.scanData : loadCurrentScanData();
-          const emps = empsRes.ok && empsRes.data ? empsRes.data : loadEmployees();
+          let emps = empsRes.ok && empsRes.data ? empsRes.data : loadEmployees();
           let loadedResults = false;
           if (activeData) {
             combinedDataRef.current = activeData;
             const cfg  = (activeRes.ok && activeRes.data?.monthCfg) || (cfgRes.ok && cfgRes.data) || loadMonthCfg();
+            // Any code sitting in the restored scan data but missing from the employee list is a
+            // new hire that never made it into settings — adopt it now instead of dropping it.
+            const known = new Set(emps.map(e => (e.code ?? '').toString().trim()));
+            const orphans = Object.keys(activeData)
+              .map(c => c.toString().trim())
+              .filter(c => c && !known.has(c) && (activeData[c] || []).some(r => r.scans.some(x => x !== null)))
+              .map(c => ({ code: c, name: `EMP-${c}`, scan: 4, base: 0, special_bonus: 0, advance: 0, advance_note: '' }));
+            if (orphans.length > 0) {
+              emps = [...emps, ...orphans];
+              setEmployees(emps);
+              saveEmployees(emps);
+              apiCall('POST', '/api/config/employees', { value: emps });
+              setNewEmps(orphans);
+            }
             const res = {};
             emps.forEach(emp => {
               const empData = activeData[emp.code] || [];
@@ -1334,6 +1349,13 @@
             const currentMap = new Map(emps.map(e => [e.code, e]));
             const sessionOnlyEmps = (latest.employees || []).filter(e => !currentMap.has(e.code));
             const mergedEmps = [...emps, ...sessionOnlyEmps];
+            // Employees that live only inside the saved session must go back into the master
+            // list, otherwise the next settings edit posts a list without them and they vanish.
+            if (sessionOnlyEmps.length > 0) {
+              setEmployees(mergedEmps);
+              saveEmployees(mergedEmps);
+              apiCall('POST', '/api/config/employees', { value: mergedEmps });
+            }
             const res = {};
             mergedEmps.forEach(emp => {
               const data = latest.scanData[emp.code] || [];
@@ -1430,25 +1452,37 @@
         }
         const slashFmt = detectSlashFmt(rawSamples);
 
+        // Canonical employee code: strip BOM/whitespace, drop leading zeros ("04" === "4").
+        // Every lookup — existing list and CSV alike — goes through this, so a code can never
+        // miss its own record because of a stray space, a BOM or a zero-padded export.
+        const normCode = (v) => {
+          const t = (v ?? "").toString().trim().replace(/^\uFEFF/, "").replace(/\s+/g, "");
+          return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
+        };
         const combinedData = {};
-        employees.forEach(e => combinedData[e.code] = []);
+        const knownCodes = new Set();
+        employees.forEach(e => { const c = normCode(e.code); knownCodes.add(c); combinedData[c] = []; });
         // track employees discovered in CSV but not in our list
         const discoveredEmps = {};
         for (const file of files) {
           const text = await file.text();
           const result = window.Papa.parse(text, { header: false, skipEmptyLines: true });
           result.data.slice(1).forEach(r => {
-            if (r.length < 6) return;
-            const code = r[0].toString().trim().replace(/^\uFEFF/, "");
+            const code = normCode(r[0]);
             if (!code) return;
-            // auto-discover new employees found in CSV
-            if (combinedData[code] === undefined) {
+            // Auto-discover new employees found in CSV. Done BEFORE the column-count guard so a
+            // new hire is registered even on a short row (e.g. a day with a single punch).
+            if (!knownCodes.has(code)) {
+              knownCodes.add(code);
               combinedData[code] = [];
               if (!discoveredEmps[code]) {
                 const name = r[1]?.toString().trim() || r[2]?.toString().trim() || `EMP-${code}`;
-                discoveredEmps[code] = { code, name, scan: 4, base: 0, special_bonus: 0, advance: 0 };
+                discoveredEmps[code] = { code, name, scan: 4, base: 0, special_bonus: 0, advance: 0, advance_note: '' };
               }
+            } else if (combinedData[code] === undefined) {
+              combinedData[code] = [];
             }
+            if (r.length < 6) return;
             const rawDate = r[4]?.toString().trim();
             if (!rawDate) return;
             const dateStr = toISO(rawDate, slashFmt); // normalised to YYYY-MM-DD
@@ -1487,30 +1521,40 @@
         saveCurrentScanData(combinedData);
         const res = {};
         allEmps.forEach(emp => {
-          const data = combinedData[emp.code] || [];
+          const c = normCode(emp.code);
+          const data = combinedData[c] || [];
           const hasValidScans = data.some(row => row.scans.some(s => s !== null));
-          if (hasValidScans) res[emp.code] = computeSalary(emp, data, detectedCfg, overrides[emp.code]);
+          if (hasValidScans) res[c] = computeSalary(emp, data, detectedCfg, overrides[c]);
         });
         setResults(res);
         // Save active work to DB (no more localStorage-only)
         saveCurrentScanData(combinedData); // keep local cache too
         apiCall('POST', '/api/active-work', { username: authSession.username, scanData: combinedData, monthCfg: detectedCfg });
-        // Merge newly discovered employees into state so they appear in Settings
+        // Merge newly discovered employees into state so they appear in Settings.
+        // The merged list is ALSO written straight to the cloud here — we do not rely on the
+        // auto-save effect alone, so a new hire can never be lost to a later overwrite.
         const newlyFound = Object.values(discoveredEmps);
         if (newlyFound.length > 0) {
-          setEmployees(prev => {
-            const existingCodes = new Set(prev.map(e => e.code));
-            const toAdd = newlyFound.filter(e => !existingCodes.has(e.code));
-            return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
-          });
+          const existingCodes = new Set(employees.map(e => normCode(e.code)));
+          const toAdd = newlyFound.filter(e => !existingCodes.has(normCode(e.code)));
+          if (toAdd.length > 0) {
+            const mergedEmps = [...employees, ...toAdd];
+            setEmployees(mergedEmps);
+            saveEmployees(mergedEmps);
+            apiCall('POST', '/api/config/employees', { value: mergedEmps });
+            setNewEmps(toAdd);
+          }
+        } else {
+          setNewEmps([]);
         }
         // Warn about employees in settings with no scan data in uploaded files
         const noData = employees.filter(e => {
-          const d = combinedData[e.code] || [];
+          const d = combinedData[normCode(e.code)] || [];
           return !d.some(row => row.scans.some(s => s !== null));
         });
         setMissingEmps(noData);
-        setStatus(`✅ ຄຳນວນສຳເລັດ ${Object.keys(res).length} ຄົນ`);
+        const addedNote = newlyFound.length ? ` · ເພີ່ມພະນັກງານໃໝ່ ${newlyFound.length} ຄົນ` : '';
+        setStatus(`✅ ຄຳນວນສຳເລັດ ${Object.keys(res).length} ຄົນ${addedNote}`);
         setTab("results");
       }, [employees, monthCfg]);
 
@@ -2170,16 +2214,19 @@
                         </tr>
                       </thead>
                       <tbody>
-                        {(results ? employees.filter(e => results[e.code]) : employees).map((emp) => {
+                        {employees.map((emp) => {
+                          const hasData = !results || !!results[emp.code];
                           const isEditing = editCode === emp.code;
                           const update = (field, val) => setEmployees(prev => prev.map(e => e.code === emp.code ? { ...e, [field]: val } : e));
                           return (
-                          <tr key={emp.code} className={`border-t transition-colors group ${isEditing ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
-                            <td className={`p-4 text-center font-bold text-slate-400 sticky left-0 z-10 w-[44px] ${isEditing ? 'bg-blue-50' : 'bg-white'}`}>{emp.code}</td>
-                            <td className={`p-4 font-black sticky left-[44px] z-10 shadow-[6px_0_8px_-6px_rgba(0,0,0,0.12)] ${isEditing ? 'bg-blue-50' : 'bg-white'}`}>
+                          <tr key={emp.code} className={`border-t transition-colors group ${isEditing ? 'bg-blue-50/50' : hasData ? 'hover:bg-slate-50' : 'bg-slate-50/60 hover:bg-slate-100'}`}>
+                            <td className={`p-4 text-center font-bold text-slate-400 sticky left-0 z-10 w-[44px] ${isEditing ? 'bg-blue-50' : hasData ? 'bg-white' : 'bg-slate-50'}`}>{emp.code}</td>
+                            <td className={`p-4 font-black sticky left-[44px] z-10 shadow-[6px_0_8px_-6px_rgba(0,0,0,0.12)] ${isEditing ? 'bg-blue-50' : hasData ? 'bg-white' : 'bg-slate-50'}`}>
                               {isEditing
                                 ? <input className="p-1 border rounded w-full font-bold" value={emp.name} onChange={e => update('name', e.target.value)} />
-                                : emp.name}
+                                : <span className={hasData ? '' : 'text-slate-400'}>{emp.name}</span>}
+                              {!hasData && <span className="ml-2 px-1.5 py-0.5 rounded bg-slate-200 text-slate-500 text-[9px] font-black align-middle">ບໍ່ມີຂໍ້ມູນ</span>}
+                              {!emp.base && <span className="ml-2 px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 text-[9px] font-black align-middle">ຍັງບໍ່ໄດ້ຕັ້ງເງິນເດືອນ</span>}
                             </td>
                             <td className="p-4 text-center">
                               {isEditing
@@ -2261,6 +2308,17 @@
             {/* ── RESULTS TAB ─────────────────────────────────────────────── */}
             {tab === "results" && results && (
               <div className="space-y-8 animate-in">
+                {newEmps.length > 0 && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-start gap-3">
+                    <span className="text-emerald-600 mt-0.5"><Icon n="warning" c="w-5 h-5"/></span>
+                    <div className="flex-1">
+                      <p className="font-black text-emerald-800 text-sm">ພົບພະນັກງານໃໝ່ {newEmps.length} ຄົນ ໃນຂໍ້ມູນສະແກນ — ເພີ່ມເຂົ້າລະບົບແລ້ວ</p>
+                      <p className="text-[11px] text-emerald-700 font-bold mt-1 leading-relaxed">{newEmps.map(e => `${e.name} (#${e.code})`).join(' • ')}</p>
+                      <p className="text-[11px] text-emerald-700 font-bold mt-1">⚠️ ກະລຸນາໄປໜ້າ "ຕັ້ງຄ່າ" ເພື່ອໃສ່ເງິນເດືອນພື້ນຖານ — ຖ້າບໍ່ໃສ່ ຍອດຈະເປັນ 0 ແລະ ຈະບໍ່ຖືກລວມໃນໄຟລ໌ໂອນ LDB</p>
+                    </div>
+                    <button onClick={() => setNewEmps([])} className="text-emerald-600 font-black text-xs px-2">✕</button>
+                  </div>
+                )}
                 {missingEmps.length > 0 && (
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
                     <span className="text-amber-500 mt-0.5"><Icon n="warning" c="w-5 h-5"/></span>
