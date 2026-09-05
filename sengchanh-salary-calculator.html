@@ -1245,6 +1245,7 @@
       const [missingEmps, setMissingEmps] = useState([]);
       const [newEmps, setNewEmps] = useState([]);   // employees auto-added from the latest upload
       const [showAllEmps, setShowAllEmps] = useState(false);   // reveal staff with no scans this month
+      const [renamedEmps, setRenamedEmps] = useState([]);      // names refreshed from the latest raw file
 
       // ── Manual per-day scan overrides: { [empCode]: { [dateStr]: slot } } ──
       // Persisted via the generic /api/config endpoint (no DB schema change).
@@ -1461,6 +1462,7 @@
           return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
         };
         const combinedData = {};
+        const csvNames = {};        // code -> name as spelled in the raw scan file
         const knownCodes = new Set();
         employees.forEach(e => { const c = normCode(e.code); knownCodes.add(c); combinedData[c] = []; });
         // track employees discovered in CSV but not in our list
@@ -1471,14 +1473,17 @@
           result.data.slice(1).forEach(r => {
             const code = normCode(r[0]);
             if (!code) return;
+            // The machine is the source of truth for names — an old ID handed to a new hire comes
+            // through with the new name on it, so remember what this file calls each code.
+            const rowName = r[1]?.toString().trim() || r[2]?.toString().trim() || '';
+            if (rowName && !csvNames[code]) csvNames[code] = rowName;
             // Auto-discover new employees found in CSV. Done BEFORE the column-count guard so a
             // new hire is registered even on a short row (e.g. a day with a single punch).
             if (!knownCodes.has(code)) {
               knownCodes.add(code);
               combinedData[code] = [];
               if (!discoveredEmps[code]) {
-                const name = r[1]?.toString().trim() || r[2]?.toString().trim() || `EMP-${code}`;
-                discoveredEmps[code] = { code, name, scan: 4, base: 0, special_bonus: 0, advance: 0, advance_note: '' };
+                discoveredEmps[code] = { code, name: csvNames[code] || `EMP-${code}`, scan: 4, base: 0, special_bonus: 0, advance: 0, advance_note: '' };
               }
             } else if (combinedData[code] === undefined) {
               combinedData[code] = [];
@@ -1499,7 +1504,19 @@
         Object.values(discoveredEmps).forEach(emp => {
           emp.scan = detectScanMode(combinedData[emp.code] || []);
         });
-        const allEmps = [...employees, ...Object.values(discoveredEmps)];
+        // Adopt the name the scanner used. Payslips, tables and the LDB file all read
+        // `name`, so refreshing it here means one upload renames the person everywhere.
+        const renamed = [];
+        const employeesRenamed = employees.map(e => {
+          const fromFile = csvNames[normCode(e.code)];
+          const current = (e.name || '').toString().trim();
+          if (fromFile && fromFile !== current) {
+            renamed.push({ code: e.code, from: current || '—', to: fromFile, hadPay: !!e.base });
+            return { ...e, name: fromFile };
+          }
+          return e;
+        });
+        const allEmps = [...employeesRenamed, ...Object.values(discoveredEmps)];
 
         // Auto-fill month / year / totalDays from normalised YYYY-MM-DD dates
         let detectedCfg = monthCfg;
@@ -1535,27 +1552,25 @@
         // The merged list is ALSO written straight to the cloud here — we do not rely on the
         // auto-save effect alone, so a new hire can never be lost to a later overwrite.
         const newlyFound = Object.values(discoveredEmps);
-        if (newlyFound.length > 0) {
-          const existingCodes = new Set(employees.map(e => normCode(e.code)));
-          const toAdd = newlyFound.filter(e => !existingCodes.has(normCode(e.code)));
-          if (toAdd.length > 0) {
-            const mergedEmps = [...employees, ...toAdd];
-            setEmployees(mergedEmps);
-            saveEmployees(mergedEmps);
-            apiCall('POST', '/api/config/employees', { value: mergedEmps });
-            setNewEmps(toAdd);
-          }
-        } else {
-          setNewEmps([]);
+        const existingCodes = new Set(employeesRenamed.map(e => normCode(e.code)));
+        const toAdd = newlyFound.filter(e => !existingCodes.has(normCode(e.code)));
+        if (toAdd.length > 0 || renamed.length > 0) {
+          const mergedEmps = [...employeesRenamed, ...toAdd];
+          setEmployees(mergedEmps);
+          saveEmployees(mergedEmps);
+          apiCall('POST', '/api/config/employees', { value: mergedEmps });
         }
+        setNewEmps(toAdd);
+        setRenamedEmps(renamed);
         // Warn about employees in settings with no scan data in uploaded files
-        const noData = employees.filter(e => {
+        const noData = employeesRenamed.filter(e => {
           const d = combinedData[normCode(e.code)] || [];
           return !d.some(row => row.scans.some(s => s !== null));
         });
         setMissingEmps(noData);
-        const addedNote = newlyFound.length ? ` · ເພີ່ມພະນັກງານໃໝ່ ${newlyFound.length} ຄົນ` : '';
-        setStatus(`✅ ຄຳນວນສຳເລັດ ${Object.keys(res).length} ຄົນ${addedNote}`);
+        const addedNote = toAdd.length ? ` · ເພີ່ມພະນັກງານໃໝ່ ${toAdd.length} ຄົນ` : '';
+        const renameNote = renamed.length ? ` · ອັບເດດຊື່ ${renamed.length} ຄົນ` : '';
+        setStatus(`✅ ຄຳນວນສຳເລັດ ${Object.keys(res).length} ຄົນ${addedNote}${renameNote}`);
         setTab("results");
       }, [employees, monthCfg]);
 
@@ -2330,6 +2345,19 @@
                       <p className="text-[11px] text-emerald-700 font-bold mt-1">⚠️ ກະລຸນາໄປໜ້າ "ຕັ້ງຄ່າ" ເພື່ອໃສ່ເງິນເດືອນພື້ນຖານ — ຖ້າບໍ່ໃສ່ ຍອດຈະເປັນ 0 ແລະ ຈະບໍ່ຖືກລວມໃນໄຟລ໌ໂອນ LDB</p>
                     </div>
                     <button onClick={() => setNewEmps([])} className="text-emerald-600 font-black text-xs px-2">✕</button>
+                  </div>
+                )}
+                {renamedEmps.length > 0 && (
+                  <div className="bg-sky-50 border border-sky-200 rounded-2xl p-4 flex items-start gap-3">
+                    <span className="text-sky-600 mt-0.5"><Icon n="edit" c="w-5 h-5"/></span>
+                    <div className="flex-1">
+                      <p className="font-black text-sky-800 text-sm">ອັບເດດຊື່ {renamedEmps.length} ຄົນ ຕາມຂໍ້ມູນສະແກນໃໝ່</p>
+                      <p className="text-[11px] text-sky-700 font-bold mt-1 leading-relaxed">{renamedEmps.map(e => `#${e.code}: ${e.from} → ${e.to}`).join(' • ')}</p>
+                      {renamedEmps.some(e => e.hadPay) && (
+                        <p className="text-[11px] text-rose-600 font-bold mt-1">⚠️ ລະຫັດເຫຼົ່ານີ້ຍັງໃຊ້ຖານເງິນເດືອນ ແລະ ເງິນເບີກຂອງຄົນເກົ່າ — ຖ້າເປັນຄົນໃໝ່ ກະລຸນາກວດ ແລະ ແກ້ໄຂໃນໜ້າ "ຕັ້ງຄ່າ": {renamedEmps.filter(e => e.hadPay).map(e => `#${e.code} ${e.to}`).join(', ')}</p>
+                      )}
+                    </div>
+                    <button onClick={() => setRenamedEmps([])} className="text-sky-600 font-black text-xs px-2">✕</button>
                   </div>
                 )}
                 {missingEmps.length > 0 && (
