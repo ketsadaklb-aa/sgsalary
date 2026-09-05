@@ -1244,6 +1244,7 @@
       const [newMonthDraft, setNewMonthDraft] = useState(null);
       const [missingEmps, setMissingEmps] = useState([]);
       const [newEmps, setNewEmps] = useState([]);   // employees auto-added from the latest upload
+      const [showAllEmps, setShowAllEmps] = useState(false);   // reveal staff with no scans this month
 
       // ── Manual per-day scan overrides: { [empCode]: { [dateStr]: slot } } ──
       // Persisted via the generic /api/config endpoint (no DB schema change).
@@ -2184,7 +2185,19 @@
                 )}
 
                 <div className="bg-white rounded-3xl border shadow-xl overflow-hidden">
-                  <div className="bg-slate-800 p-5 text-white font-black uppercase tracking-widest text-xs flex items-center gap-2"><Icon n="clipboard" c="w-4 h-4"/> Manual Adjustment List</div>
+                  <div className="bg-slate-800 p-5 text-white font-black uppercase tracking-widest text-xs flex items-center gap-2">
+                    <Icon n="clipboard" c="w-4 h-4"/> Manual Adjustment List
+                    {results && (() => {
+                      const hidden = employees.filter(e => !results[e.code]).length;
+                      if (!hidden) return null;
+                      return (
+                        <button onClick={() => setShowAllEmps(v => !v)}
+                          className="ml-auto normal-case tracking-normal bg-slate-600 hover:bg-slate-500 active:scale-95 transition-all px-3 py-1.5 rounded-lg text-[10px] font-black">
+                          {showAllEmps ? `ເຊື່ອງຜູ້ບໍ່ມີຂໍ້ມູນ (${hidden} ຄົນ)` : `ສະແດງຜູ້ບໍ່ມີຂໍ້ມູນ (${hidden} ຄົນ)`}
+                        </button>
+                      );
+                    })()}
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="compact-tbl w-full text-[11px] whitespace-nowrap">
                       <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase">
@@ -2214,7 +2227,7 @@
                         </tr>
                       </thead>
                       <tbody>
-                        {employees.map((emp) => {
+                        {employees.filter(e => showAllEmps || !results || results[e.code]).map((emp) => {
                           const hasData = !results || !!results[emp.code];
                           const isEditing = editCode === emp.code;
                           const update = (field, val) => setEmployees(prev => prev.map(e => e.code === emp.code ? { ...e, [field]: val } : e));
